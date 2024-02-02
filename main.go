@@ -152,9 +152,7 @@ func main() {
 
 func validatePlan(plan Plan) error {
 	// Validate PlanCostShares
-	if plan.PlanCostShares.Deductible == 0 || plan.PlanCostShares.Org == "" ||
-		plan.PlanCostShares.Copay == 0 || plan.PlanCostShares.ObjectId == "" ||
-		plan.PlanCostShares.ObjectType == "" {
+	if plan.PlanCostShares.Org == "" || plan.PlanCostShares.ObjectId == "" || plan.PlanCostShares.ObjectType == "" {
 		return errors.New("missing required fields in PlanCostShares")
 	}
 
@@ -167,8 +165,7 @@ func validatePlan(plan Plan) error {
 		if service.Org == "" || service.ObjectId == "" || service.ObjectType == "" ||
 			service.LinkedService.Org == "" || service.LinkedService.ObjectId == "" ||
 			service.LinkedService.ObjectType == "" || service.LinkedService.Name == "" ||
-			service.PlanServiceCostShares.Deductible == 0 || service.PlanServiceCostShares.Org == "" ||
-			service.PlanServiceCostShares.Copay == 0 || service.PlanServiceCostShares.ObjectId == "" ||
+			service.PlanServiceCostShares.Org == "" || service.PlanServiceCostShares.ObjectId == "" ||
 			service.PlanServiceCostShares.ObjectType == "" {
 			return errors.New("missing required fields in LinkedPlanServices")
 		}
@@ -308,9 +305,9 @@ func updateItemHandler(svc *dynamodb.Client) http.HandlerFunc {
 func deleteItemHandler(svc *dynamodb.Client) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		vars := mux.Vars(r)
-		objectId := vars["objectId"]
+		objectId := vars["ObjectId"]
 		key := map[string]types.AttributeValue{
-			"objectId": &types.AttributeValueMemberS{Value: objectId},
+			"ObjectId": &types.AttributeValueMemberS{Value: objectId},
 		}
 
 		if err := deleteItem(svc, tableName, key); err != nil {
