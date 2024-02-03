@@ -42,5 +42,7 @@ aws dynamodb list-tables --endpoint-url http://localhost:8000
     // }
 
 
-
+Tasks:
 The delete should return 204 -> No content and then 404(WITH respwct to REDDIS)
+Creation Time
+Modularise
