@@ -1,11 +1,12 @@
 package main
 
-//COPAY VALUE 0 -----> change it //adarsh
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"time"
@@ -104,41 +105,6 @@ func main() {
 		// deleteTable(svc, tableName)
 	}
 
-	// //Step 3: Push the data into the table from http req
-
-	// // Step 3: Check table contents (example using Scan, but you might use Query based on your use case)
-	// scanOutput, err := svc.Scan(context.TODO(), &dynamodb.ScanInput{
-	// 	TableName: aws.String(tableName),
-	// })
-	// if err != nil {
-	// 	log.Fatalf("Failed to scan table: %s", err)
-	// }
-
-	// fmt.Printf("Found %d items in the table %s\n", len(scanOutput.Items), tableName)
-
-	// jsonData := `{"planCostShares":{"deductible":2000,"_org":"example.com","copay":23,"objectId":"1234vxc2324sdf-501","objectType":"membercostshare"},"linkedPlanServices":[{"linkedService":{"_org":"example.com","objectId":"1234520xvc30asdf-502","objectType":"service","name":"Yearly physical"},"planserviceCostShares":{"deductible":10,"_org":"example.com","copay":0,"objectId":"1234512xvc1314asdfs-503","objectType":"membercostshare"},"_org":"example.com","objectId":"27283xvx9asdff-504","objectType":"planservice"}],"_org":"example.com","objectId":"12xvxc345ssdsds-508","objectType":"plan","planType":"inNetwork","creationDate":"12-12-2017"}`
-
-	// var plan Plan
-	// err = json.Unmarshal([]byte(jsonData), &plan)
-	// if err != nil {
-	// 	fmt.Println(err)
-	// }
-	// fmt.Printf("PLAN%+v\n", plan)
-	// fmt.Println("")
-
-	// // Build the request with its input parameters
-	// resp, err := svc.ListTables(context.TODO(), &dynamodb.ListTablesInput{
-	// 	Limit: aws.Int32(5),
-	// })
-	// if err != nil {
-	// 	log.Fatalf("failed to list tables, %v", err)
-	// }
-
-	// fmt.Println("Tables:")
-	// for _, tableName := range resp.TableNames {
-	// 	fmt.Println(tableName)
-	// }
-
 	// //HTTP
 	r := mux.NewRouter()
 
@@ -176,55 +142,36 @@ func validatePlan(plan Plan) error {
 		return errors.New("missing required top-level Plan fields")
 	}
 
-	// Add more validations as necessary...
-
 	return nil
 }
 
 func createItemHandler(svc *dynamodb.Client) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Read the entire request body
+		bodyBytes, err := ioutil.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Error reading request body", http.StatusInternalServerError)
+			return
+		}
 
+		// Generate ETag for the item using SHA-256 of the request body
+		eTag := fmt.Sprintf(`"%x"`, sha256.Sum256(bodyBytes))
+		w.Header().Set("ETag", eTag)
+
+		// Use the read body to unmarshal into the Plan struct
 		var item Plan
-		if err := json.NewDecoder(r.Body).Decode(&item); err != nil {
+		if err := json.Unmarshal(bodyBytes, &item); err != nil {
 			fmt.Println("Error unmarshalling the json request")
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		formatted_json, err := json.MarshalIndent(item, "", "    ") // Indent with four spaces
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
 
-		fmt.Printf("Received JSON: %s\n", string(formatted_json))
-
+		// Proceed with validation and other logic as before
 		if err := validatePlan(item); err != nil {
 			fmt.Println("Validation error:", err)
 			http.Error(w, "Bad request: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-
-		// // Read the entire request body
-		// body, err := ioutil.ReadAll(r.Body)
-		// if err != nil {
-		// 	http.Error(w, "Error reading request body", http.StatusInternalServerError)
-		// 	return
-		// }
-		// defer r.Body.Close()
-
-		// // Unmarshal the JSON data into the 'plan' struct
-		// var item Plan
-		// if err := json.Unmarshal(body, &item); err != nil {
-		// 	http.Error(w, err.Error(), http.StatusBadRequest)
-		// 	return
-		// }
-
-		// fmt.Printf("Received item: %+v\n", item) // Debugging line
-
-		// if item.ObjectId == "" {
-		// 	http.Error(w, "createItemHandler() - objectId (primary key) is missing or empty", http.StatusBadRequest)
-		// 	return
-		// }
 
 		av, err := attributevalue.MarshalMap(item)
 		if err != nil {
@@ -232,30 +179,19 @@ func createItemHandler(svc *dynamodb.Client) http.HandlerFunc {
 			return
 		}
 
-		formatted, err := json.MarshalIndent(av, "", "    ") // Indent with four spaces
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		fmt.Printf("AttributeValue map: %s\n", formatted)
-
-		// if _, exists := av["objectId"]; !exists || av["objectId"].(*types.AttributeValueMemberS).Value == "" {
-		// 	http.Error(w, "createItem() - objectId (primary key) is missing or empty", http.StatusInternalServerError)
-		// 	return
-		// }
-
 		if _, exists := av["ObjectId"]; !exists || av["ObjectId"].(*types.AttributeValueMemberS).Value == "" {
 			http.Error(w, "createItem() - ObjectId (primary key) is missing or empty", http.StatusInternalServerError)
 			return
 		}
 
-		fmt.Println("ObjectID present......")
-
-		if err := createItem(svc, tableName, av); err != nil {
+		// Store the ETag along with the item in DynamoDB
+		av["ETag"] = &types.AttributeValueMemberS{Value: eTag}
+		if err := createItem(svc, tableName, av, eTag); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+
+		fmt.Println("ETAG in POST:", eTag)
 
 		w.WriteHeader(http.StatusCreated)
 	}
@@ -269,12 +205,28 @@ func getItemHandler(svc *dynamodb.Client) http.HandlerFunc {
 			"ObjectId": &types.AttributeValueMemberS{Value: objectId},
 		}
 
-		item, err := getItem(svc, tableName, key)
+		// Retrieve the item and its ETag from DynamoDB
+		item, eTag, err := getItem(svc, tableName, key)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
+		// Set the ETag header in the response
+		w.Header().Set("ETag", eTag)
+
+		fmt.Println("ETAG retrieved from DB", eTag)
+
+		// Check if the request header includes an If-None-Match field
+		ifMatch := r.Header.Get("If-None-Match")
+		fmt.Println("ETAG from GET", ifMatch)
+
+		if ifMatch == eTag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+
+		// If the ETag does not match, encode and return the item as usual
 		json.NewEncoder(w).Encode(item)
 	}
 }
@@ -354,8 +306,6 @@ func createTable(svc *dynamodb.Client, tableName string) {
 
 	// Your existing CreateTable logic here
 	fmt.Printf("Creating table %s...\n", *input.TableName)
-	// Assume this function creates the table as per your existing setup
-	// After creation, you might want to wait until the table's status becomes ACTIVE
 }
 
 // waitForTableToBeReady waits for the DynamoDB table to be in the ACTIVE state.
@@ -392,19 +342,8 @@ func waitForTableToBeReady(svc *dynamodb.Client, tableName string) error {
 // 	return nil
 // }
 
-func createItem(svc *dynamodb.Client, tableName string, av map[string]types.AttributeValue) error {
-	// av, err := attributevalue.MarshalMap(item)
-	// if err != nil {
-	// 	return err
-	// }
-
-	// fmt.Printf("AV:%v", av)
-
-	// Ensure 'av' contains the primary key attributes
-	// For example, if 'objectId' is a required primary key:
-	// if _, exists := av["objectId"]; !exists || av["objectId"].(*types.AttributeValueMemberS).Value == "" {
-	// 	return errors.New("createItem() - objectId (primary key) is missing or empty")
-	// }
+func createItem(svc *dynamodb.Client, tableName string, av map[string]types.AttributeValue, eTag string) error {
+	av["ETag"] = &types.AttributeValueMemberS{Value: eTag}
 
 	input := &dynamodb.PutItemInput{
 		Item:      av,
@@ -422,7 +361,7 @@ func createItem(svc *dynamodb.Client, tableName string, av map[string]types.Attr
 	return err
 }
 
-func getItem(svc *dynamodb.Client, tableName string, key map[string]types.AttributeValue) (*Plan, error) {
+func getItem(svc *dynamodb.Client, tableName string, key map[string]types.AttributeValue) (*Plan, string, error) {
 	input := &dynamodb.GetItemInput{
 		Key:       key,
 		TableName: aws.String(tableName),
@@ -430,16 +369,28 @@ func getItem(svc *dynamodb.Client, tableName string, key map[string]types.Attrib
 
 	result, err := svc.GetItem(context.TODO(), input)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	plan := Plan{}
 	err = attributevalue.UnmarshalMap(result.Item, &plan)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
-	return &plan, nil
+	// Extract the ETag from the result item
+	eTagValue, exists := result.Item["ETag"]
+	if !exists {
+		return &plan, "", nil // ETag might not exist for some items
+	}
+	eTag, ok := eTagValue.(*types.AttributeValueMemberS)
+	if !ok {
+		return &plan, "", errors.New("ETag format is invalid")
+	}
+
+	// return &plan, nil
+	return &plan, eTag.Value, nil
+
 }
 
 func updateItem(svc *dynamodb.Client, tableName string, key map[string]types.AttributeValue, updateExpression string, expressionAttributeValues map[string]types.AttributeValue) error {

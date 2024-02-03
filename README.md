@@ -40,3 +40,7 @@ aws dynamodb list-tables --endpoint-url http://localhost:8000
     // "creationDate": {
     //     "S": "12-12-2017"
     // }
+
+
+
+The delete should return 204 -> No content and then 404(WITH respwct to REDDIS)
