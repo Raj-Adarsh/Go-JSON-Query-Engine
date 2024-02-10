@@ -14,11 +14,11 @@ var TableName string = "PLAN_TABLE"
 
 func ConnectToDB() *dynamodb.Client {
 	cfg, err := config.LoadDefaultConfig(context.TODO(),
-		config.WithRegion("us-west-2"), // Or any other preferred region
+		config.WithRegion("us-west-2"),
 		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("dummy", "dummy", "")),
 		config.WithEndpointResolver(aws.EndpointResolverFunc(func(service, region string) (aws.Endpoint, error) {
 			return aws.Endpoint{
-				URL:           "http://localhost:8000", // Endpoint for DynamoDB Local
+				URL:           "http://localhost:8000",
 				SigningRegion: "us-west-2",
 			}, nil
 		})),
@@ -29,7 +29,6 @@ func ConnectToDB() *dynamodb.Client {
 		log.Fatalf("unable to load SDK config, %v", err)
 	}
 
-	// Using the Config value, create the DynamoDB client
 	svc := dynamodb.NewFromConfig(cfg)
 
 	return svc

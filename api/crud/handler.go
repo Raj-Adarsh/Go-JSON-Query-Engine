@@ -21,34 +21,34 @@ import (
 	"crud_with_dynamodb/models"
 )
 
-func validatePlan(plan models.Plan) error {
-	// Validate PlanCostShares
-	if plan.PlanCostShares.Org == "" || plan.PlanCostShares.ObjectId == "" || plan.PlanCostShares.ObjectType == "" {
-		return errors.New("missing required fields in PlanCostShares")
-	}
+// func validatePlan(plan models.Plan) error {
+// 	// Validate PlanCostShares
+// 	if plan.PlanCostShares.Org == "" || plan.PlanCostShares.ObjectId == "" || plan.PlanCostShares.ObjectType == "" {
+// 		return errors.New("missing required fields in PlanCostShares")
+// 	}
 
-	// Validate each LinkedPlanService
-	if len(plan.LinkedPlanServices) == 0 {
-		return errors.New("linkedPlanServices is required")
-	}
+// 	// Validate each LinkedPlanService
+// 	if len(plan.LinkedPlanServices) == 0 {
+// 		return errors.New("linkedPlanServices is required")
+// 	}
 
-	for _, service := range plan.LinkedPlanServices {
-		if service.Org == "" || service.ObjectId == "" || service.ObjectType == "" ||
-			service.LinkedService.Org == "" || service.LinkedService.ObjectId == "" ||
-			service.LinkedService.ObjectType == "" || service.LinkedService.Name == "" ||
-			service.PlanServiceCostShares.Org == "" || service.PlanServiceCostShares.ObjectId == "" ||
-			service.PlanServiceCostShares.ObjectType == "" {
-			return errors.New("missing required fields in LinkedPlanServices")
-		}
-	}
+// 	for _, service := range plan.LinkedPlanServices {
+// 		if service.Org == "" || service.ObjectId == "" || service.ObjectType == "" ||
+// 			service.LinkedService.Org == "" || service.LinkedService.ObjectId == "" ||
+// 			service.LinkedService.ObjectType == "" || service.LinkedService.Name == "" ||
+// 			service.PlanServiceCostShares.Org == "" || service.PlanServiceCostShares.ObjectId == "" ||
+// 			service.PlanServiceCostShares.ObjectType == "" {
+// 			return errors.New("missing required fields in LinkedPlanServices")
+// 		}
+// 	}
 
-	// Validate top-level Plan fields
-	if plan.Org == "" || plan.ObjectId == "" || plan.ObjectType == "" || plan.PlanType == "" {
-		return errors.New("missing required top-level Plan fields")
-	}
+// 	// Validate top-level Plan fields
+// 	if plan.Org == "" || plan.ObjectId == "" || plan.ObjectType == "" || plan.PlanType == "" {
+// 		return errors.New("missing required top-level Plan fields")
+// 	}
 
-	return nil
-}
+// 	return nil
+// }
 
 func CreateItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -63,16 +63,13 @@ func CreateItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 				// Step 2: Table does not exist, so create it
 				CreateTable(svc, db.TableName)
 			} else {
-				// Other error occurred
 				log.Fatalf("Failed to describe table: %s", err)
 			}
 		} else {
 			// Table exists
 			fmt.Printf("Table %s already exists.\n", db.TableName)
-			// deleteTable(svc, TableName)
 		}
 
-		//Now parse the json to put into table
 		bodyBytes, err := ioutil.ReadAll(c.Request.Body)
 		if err != nil {
 			c.AbortWithError(http.StatusInternalServerError, errors.New("error reading request body"))
@@ -88,10 +85,21 @@ func CreateItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 			return
 		}
 
-		if err := validatePlan(item); err != nil {
+		err = models.ValidateStruct(item)
+		if err != nil {
+			fmt.Println(err)
 			c.AbortWithError(http.StatusBadRequest, fmt.Errorf("bad request: %v", err))
 			return
 		}
+
+		if item.PlanCostShares.Copay == nil || item.PlanCostShares.Deductible == nil {
+			c.AbortWithError(http.StatusBadRequest, fmt.Errorf("bad request: %v", err))
+		}
+
+		// if err := validatePlan(item); err != nil {
+		// 	c.AbortWithError(http.StatusBadRequest, fmt.Errorf("bad request: %v", err))
+		// 	return
+		// }
 
 		av, err := attributevalue.MarshalMap(item)
 		if err != nil {
@@ -116,6 +124,10 @@ func CreateItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 
 func GetItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if len(c.Request.URL.RawQuery) > 0 {
+			c.Status(http.StatusBadRequest)
+			return
+		}
 		objectId := c.Param("ObjectId")
 		key := map[string]types.AttributeValue{
 			"ObjectId": &types.AttributeValueMemberS{Value: objectId},
@@ -165,12 +177,16 @@ func UpdateItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 
 func DeleteItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if len(c.Request.URL.RawQuery) > 0 {
+			c.Status(http.StatusBadRequest)
+			return
+		}
 		objectId := c.Param("ObjectId")
 		key := map[string]types.AttributeValue{
 			"ObjectId": &types.AttributeValueMemberS{Value: objectId},
 		}
 
-		_, eTag, err := getItem(svc, db.TableName, key)
+		_, _, err := getItem(svc, db.TableName, key)
 		if err != nil {
 			if err.Error() == "item not found" {
 				c.AbortWithStatus(http.StatusNotFound)
@@ -180,15 +196,15 @@ func DeleteItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 			return
 		}
 
-		// Set ETag header before deleting
-		c.Header("ETag", eTag)
+		// // Set ETag header before deleting
+		// c.Header("ETag", eTag)
 
-		// Check If-Match header for ETag validation
-		ifMatch := c.GetHeader("If-Match")
-		if ifMatch != eTag {
-			c.AbortWithStatus(http.StatusPreconditionFailed)
-			return
-		}
+		// // Check If-Match header for ETag validation
+		// ifMatch := c.GetHeader("If-Match")
+		// if ifMatch != eTag {
+		// 	c.AbortWithStatus(http.StatusPreconditionFailed)
+		// 	return
+		// }
 
 		if err := deleteItem(svc, db.TableName, key); err != nil {
 			c.AbortWithError(http.StatusInternalServerError, err)
@@ -200,28 +216,22 @@ func DeleteItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 }
 
 func CreateTable(svc *dynamodb.Client, tableName string) {
-	// Call waitForTableToBeReady after creating the table
-	// err := waitForTableToBeReady(svc, tableName)
-	// if err != nil {
-	// 	log.Fatalf("Failed to wait for table readiness: %s", err)
-	// }
-	//Create a table
 	input := &dynamodb.CreateTableInput{
-		TableName: aws.String("PLAN_TABLE"), // Replace with your actual table name
+		TableName: aws.String("PLAN_TABLE"),
 		KeySchema: []types.KeySchemaElement{
 			{
 				AttributeName: aws.String("ObjectId"),
-				KeyType:       types.KeyTypeHash, // Use the types.KeyTypeHash constant
+				KeyType:       types.KeyTypeHash,
 			},
 		},
 		AttributeDefinitions: []types.AttributeDefinition{
 			{
 				AttributeName: aws.String("ObjectId"),
-				AttributeType: types.ScalarAttributeTypeS, // Use the types.ScalarAttributeTypeS constant
+				AttributeType: types.ScalarAttributeTypeS,
 			},
 		},
-		BillingMode: types.BillingModeProvisioned, // Use BillingMode instead of ProvisionedThroughput if it's deprecated
-		ProvisionedThroughput: &types.ProvisionedThroughput{ // Ensure ProvisionedThroughput is correctly referenced
+		BillingMode: types.BillingModeProvisioned,
+		ProvisionedThroughput: &types.ProvisionedThroughput{
 			ReadCapacityUnits:  aws.Int64(1),
 			WriteCapacityUnits: aws.Int64(1),
 		},
@@ -232,7 +242,6 @@ func CreateTable(svc *dynamodb.Client, tableName string) {
 		log.Fatalf("Got error calling CreateTable: %s", err)
 	}
 
-	// Your existing CreateTable logic here
 	fmt.Printf("Creating table %s...\n", *input.TableName)
 }
 
@@ -252,7 +261,7 @@ func waitForTableToBeReady(svc *dynamodb.Client, tableName string) error {
 		}
 
 		fmt.Printf("Waiting for table %s to be ACTIVE...\n", tableName)
-		time.Sleep(5 * time.Second) // Wait for 5 seconds before checking again
+		time.Sleep(5 * time.Second)
 	}
 
 	return nil
@@ -266,7 +275,7 @@ func createItem(svc *dynamodb.Client, tableName string, av map[string]types.Attr
 		TableName: aws.String(tableName),
 	}
 
-	formatted, err := json.MarshalIndent(input, "", "    ") // Indent with four spaces
+	formatted, err := json.MarshalIndent(input, "", "    ")
 	if err != nil {
 		log.Fatalf("Error formatting input: %v", err)
 	}
@@ -289,7 +298,7 @@ func getItem(svc *dynamodb.Client, tableName string, key map[string]types.Attrib
 	}
 
 	if len(result.Item) == 0 {
-		return nil, "", errors.New("item not found") // Return a specific error when item is not found
+		return nil, "", errors.New("item not found")
 	}
 
 	plan := models.Plan{}
@@ -301,14 +310,13 @@ func getItem(svc *dynamodb.Client, tableName string, key map[string]types.Attrib
 	// Extract the ETag from the result item
 	eTagValue, exists := result.Item["ETag"]
 	if !exists {
-		return &plan, "", nil // ETag might not exist for some items
+		return &plan, "", nil
 	}
 	eTag, ok := eTagValue.(*types.AttributeValueMemberS)
 	if !ok {
 		return &plan, "", errors.New("ETag format is invalid")
 	}
 
-	// return &plan, nil
 	return &plan, eTag.Value, nil
 
 }
