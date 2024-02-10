@@ -155,6 +155,33 @@ func GetItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 	}
 }
 
+func GetAllItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if len(c.Request.URL.RawQuery) > 0 {
+			c.Status(http.StatusBadRequest)
+			return
+		}
+		scanInput := &dynamodb.ScanInput{
+			TableName: aws.String(db.TableName),
+		}
+
+		scanResult, err := svc.Scan(context.TODO(), scanInput)
+		if err != nil {
+			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("failed to fetch items: %v", err))
+			return
+		}
+
+		// Unmarshal the results into your model slice
+		var items []models.Plan
+		err = attributevalue.UnmarshalListOfMaps(scanResult.Items, &items)
+		if err != nil {
+			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("failed to unmarshal items: %v", err))
+			return
+		}
+		c.JSON(http.StatusOK, items)
+	}
+}
+
 func UpdateItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		objectId := c.Param("objectId")
