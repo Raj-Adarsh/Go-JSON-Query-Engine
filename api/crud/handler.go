@@ -113,8 +113,50 @@ func CreateItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 		}
 
 		av["ETag"] = &types.AttributeValueMemberS{Value: eTag}
-		if err := createItem(svc, db.TableName, av, eTag); err != nil {
-			c.AbortWithError(http.StatusInternalServerError, err)
+		// if err := createItem(svc, db.TableName, av, eTag); err != nil {
+		// 	c.AbortWithError(http.StatusInternalServerError, err)
+		// 	return
+		// }
+		// err = createItem(svc, db.TableName, av, eTag)
+		// if err != nil {
+		// 	// Check if the error is because the item with ObjectId already exists
+		// 	var conditionFailedException *types.ConditionalCheckFailedException
+		// 	if errors.As(err, &conditionFailedException) {
+		// 		// Return HTTP 409 Conflict when the item already exists
+		// 		c.AbortWithError(http.StatusConflict, fmt.Errorf("item with ObjectId already exists"))
+		// 		return
+		// 	}
+		// 	// For any other errors, return the original error with HTTP 500 Internal Server Error
+		// 	c.AbortWithError(http.StatusInternalServerError, err)
+		// 	return
+		// }
+
+		// err = createItem(svc, db.TableName, av, eTag)
+		// if err != nil {
+		// 	var conditionFailedException *types.ConditionalCheckFailedException
+		// 	if errors.As(err, &conditionFailedException) {
+		// 		// Correctly identified the ConditionalCheckFailedException
+		// 		c.AbortWithStatusJSON(http.StatusConflict, gin.H{"error": "item with ObjectId already exists"})
+		// 		return
+		// 	}
+		// 	// Log the error for debugging purposes
+		// 	log.Printf("Failed to create item: %v", err)
+		// 	// For any other errors, return the original error with HTTP 500 Internal Server Error
+		// 	c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		// 	return
+		// }
+
+		err = createItem(svc, db.TableName, av, eTag)
+		if err != nil {
+			if err.Error() == "item with ObjectId already exists" {
+				// If the error message matches, return a 409 Conflict.
+				c.AbortWithStatusJSON(http.StatusConflict, gin.H{"error": "item with ObjectId already exists"})
+				return
+			}
+			// Log the error for debugging purposes
+			log.Printf("Failed to create item: %v", err)
+			// For any other errors, return a 500 Internal Server Error.
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 			return
 		}
 
@@ -297,9 +339,12 @@ func waitForTableToBeReady(svc *dynamodb.Client, tableName string) error {
 func createItem(svc *dynamodb.Client, tableName string, av map[string]types.AttributeValue, eTag string) error {
 	av["ETag"] = &types.AttributeValueMemberS{Value: eTag}
 
+	conditionExpression := "attribute_not_exists(ObjectId)"
+
 	input := &dynamodb.PutItemInput{
-		Item:      av,
-		TableName: aws.String(tableName),
+		Item:                av,
+		TableName:           aws.String(tableName),
+		ConditionExpression: aws.String(conditionExpression),
 	}
 
 	formatted, err := json.MarshalIndent(input, "", "    ")
@@ -310,6 +355,15 @@ func createItem(svc *dynamodb.Client, tableName string, av map[string]types.Attr
 	fmt.Printf("INPUT: %s\n", string(formatted))
 
 	_, err = svc.PutItem(context.TODO(), input)
+	if err != nil {
+		var conditionFailedException *types.ConditionalCheckFailedException
+		if errors.As(err, &conditionFailedException) {
+			// If the error is because the condition failed, return a more specific error
+			return fmt.Errorf("item with ObjectId already exists")
+		}
+		// For any other errors, return the original error
+		return err
+	}
 	return err
 }
 
