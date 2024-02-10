@@ -14,6 +14,7 @@ func InitRouter() *gin.Engine {
 
 	r.POST("/v1/plan", crud.CreateItemHandler(svc))
 	r.GET("/v1/plan/:ObjectId", crud.GetItemHandler(svc))
+	r.GET("/v1/plan", crud.GetAllItemHandler(svc))
 	r.DELETE("/v1/plan/:ObjectId", crud.DeleteItemHandler(svc))
 
 	return r
