@@ -85,37 +85,43 @@ func CreateItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 			return
 		}
 
-		err = models.ValidateStruct(item)
+		flatMap, err := FlattenPlan(item)
 		if err != nil {
-			fmt.Println(err)
-			c.AbortWithError(http.StatusBadRequest, fmt.Errorf("bad request: %v", err))
+			log.Fatalf("Error flattening plan: %v", err)
+			// Handle the error appropriately
+			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error flattening plan: %v", err))
 			return
 		}
 
-		if item.PlanCostShares.Copay == nil || item.PlanCostShares.Deductible == nil {
-			c.AbortWithError(http.StatusBadRequest, fmt.Errorf("bad request: %v", err))
-		}
+		// Iterate over flatMap and store each block in the database
+		for objectId, jsonBlock := range flatMap {
+			fmt.Printf("ObjectId: %s, JSON Block: %s\n", objectId, string(jsonBlock))
 
-		// if err := validatePlan(item); err != nil {
-		// 	c.AbortWithError(http.StatusBadRequest, fmt.Errorf("bad request: %v", err))
-		// 	return
-		// }
+			// Convert jsonBlock back to a map for attributevalue.MarshalMap
+			var blockMap map[string]interface{}
+			if err := json.Unmarshal(jsonBlock, &blockMap); err != nil {
+				c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error preparing data for objectId %s: %v", objectId, err))
+				return
+			}
 
-		av, err := attributevalue.MarshalMap(item)
-		if err != nil {
-			c.AbortWithError(http.StatusInternalServerError, err)
-			return
-		}
+			av, err := attributevalue.MarshalMap(blockMap)
+			if err != nil {
+				c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error marshalling data for objectId %s: %v", objectId, err))
+				return
+			}
 
-		if _, exists := av["ObjectId"]; !exists || av["ObjectId"].(*types.AttributeValueMemberS).Value == "" {
-			c.AbortWithError(http.StatusInternalServerError, errors.New("createItem() - ObjectId (primary key) is missing or empty"))
-			return
-		}
+			// Add the objectId to the attribute values if not already present
+			if _, exists := av["ObjectId"]; !exists {
+				av["ObjectId"] = &types.AttributeValueMemberS{Value: objectId}
+			}
 
-		av["ETag"] = &types.AttributeValueMemberS{Value: eTag}
-		if err := createItem(svc, db.TableName, av, eTag); err != nil {
-			c.AbortWithError(http.StatusInternalServerError, err)
-			return
+			av["ETag"] = &types.AttributeValueMemberS{Value: eTag}
+
+			// Perform the database operation to store the item
+			if err := createItem(svc, db.TableName, av, eTag); err != nil {
+				c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error storing item with objectId %s: %v", objectId, err))
+				return
+			}
 		}
 
 		c.Status(http.StatusCreated)
@@ -155,20 +161,122 @@ func GetItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 	}
 }
 
-func UpdateItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
+func GetItemByObjectIDHandler(svc *dynamodb.Client) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		objectId := c.Param("objectId")
-		updateExpression := "SET #attrName = :attrValue"
-		expressionAttributeValues := map[string]types.AttributeValue{
-			":attrValue": &types.AttributeValueMemberS{Value: "newValue"},
-		}
-		key := map[string]types.AttributeValue{
-			"objectId": &types.AttributeValueMemberS{Value: objectId},
+		objectId := c.Param("ObjectId")
+		if objectId == "" {
+			c.AbortWithError(http.StatusBadRequest, errors.New("ObjectId must be provided"))
+			return
 		}
 
-		if err := updateItem(svc, db.TableName, key, updateExpression, expressionAttributeValues); err != nil {
+		key := map[string]types.AttributeValue{
+			"ObjectId": &types.AttributeValueMemberS{Value: objectId},
+		}
+
+		item, eTag, err := getItem(svc, db.TableName, key)
+		if err != nil {
+			if err.Error() == "item not found" {
+				c.AbortWithStatus(http.StatusNotFound)
+				return
+			}
 			c.AbortWithError(http.StatusInternalServerError, err)
 			return
+		}
+
+		c.Header("ETag", eTag)
+
+		ifMatch := c.GetHeader("If-None-Match")
+		if ifMatch == eTag {
+			c.Status(http.StatusNotModified)
+			return
+		}
+
+		c.JSON(http.StatusOK, item)
+	}
+}
+
+// func UpdateItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
+// 	return func(c *gin.Context) {
+// 		objectId := c.Param("objectId")
+// 		updateExpression := "SET #attrName = :attrValue"
+// 		expressionAttributeValues := map[string]types.AttributeValue{
+// 			":attrValue": &types.AttributeValueMemberS{Value: "newValue"},
+// 		}
+// 		key := map[string]types.AttributeValue{
+// 			"objectId": &types.AttributeValueMemberS{Value: objectId},
+// 		}
+
+// 		if err := updateItem(svc, db.TableName, key, updateExpression, expressionAttributeValues); err != nil {
+// 			c.AbortWithError(http.StatusInternalServerError, err)
+// 			return
+// 		}
+
+// 		c.Status(http.StatusOK)
+// 	}
+// }
+
+func UpdateItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		objectId := c.Param("ObjectId")
+		if objectId == "" {
+			c.AbortWithError(http.StatusBadRequest, errors.New("ObjectId must be provided"))
+			return
+		}
+
+		bodyBytes, err := ioutil.ReadAll(c.Request.Body)
+		if err != nil {
+			c.AbortWithError(http.StatusInternalServerError, errors.New("error reading request body"))
+			return
+		}
+
+		var item models.Plan
+		if err := json.Unmarshal(bodyBytes, &item); err != nil {
+			c.AbortWithError(http.StatusBadRequest, errors.New("error unmarshalling the json request"))
+			return
+		}
+
+		flatMap, err := FlattenPlan(item)
+		if err != nil {
+			log.Fatalf("Error flattening plan: %v", err)
+			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error flattening plan: %v", err))
+			return
+		}
+
+		// Iterate over flatMap and update each block in the database
+		for _, jsonBlock := range flatMap {
+			// Convert jsonBlock back to a map for attributevalue.MarshalMap
+			var updateMap map[string]interface{}
+			if err := json.Unmarshal(jsonBlock, &updateMap); err != nil {
+				c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error preparing update data: %v", err))
+				return
+			}
+
+			av, err := attributevalue.MarshalMap(updateMap)
+			if err != nil {
+				c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error marshalling update data: %v", err))
+				return
+			}
+
+			// Construct the update expression and attribute values
+			updateExpression := "SET"
+			expressionAttributeValues := map[string]types.AttributeValue{}
+			i := 0
+			for k, v := range av {
+				updateExpression += fmt.Sprintf(" %s = :val%d,", k, i)
+				expressionAttributeValues[fmt.Sprintf(":val%d", i)] = v
+				i++
+			}
+			updateExpression = updateExpression[:len(updateExpression)-1] // Remove the last comma
+
+			// Perform the update operation
+			key := map[string]types.AttributeValue{
+				"ObjectId": &types.AttributeValueMemberS{Value: objectId},
+			}
+			err = updateItem(svc, db.TableName, key, updateExpression, expressionAttributeValues)
+			if err != nil {
+				c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error updating item: %v", err))
+				return
+			}
 		}
 
 		c.Status(http.StatusOK)
@@ -355,4 +463,115 @@ func deleteItem(svc *dynamodb.Client, tableName string, key map[string]types.Att
 
 	_, err := svc.DeleteItem(context.TODO(), input)
 	return err
+}
+
+func FlattenPlan(plan models.Plan) (map[string]json.RawMessage, error) {
+	flatMap := make(map[string]json.RawMessage)
+
+	// Serialize the top-level plan and add it to the map
+	planJSON, err := json.Marshal(plan)
+	if err != nil {
+		return nil, err
+	}
+	flatMap[plan.ObjectId] = planJSON
+
+	// Serialize PlanCostShares
+	costSharesJSON, err := json.Marshal(plan.PlanCostShares)
+	if err != nil {
+		return nil, err
+	}
+	flatMap[plan.PlanCostShares.ObjectId] = costSharesJSON
+
+	// Iterate over LinkedPlanServices and serialize each one along with its LinkedService and PlanServiceCostShares
+	for _, service := range plan.LinkedPlanServices {
+		serviceJSON, err := json.Marshal(service)
+		if err != nil {
+			return nil, err
+		}
+		flatMap[service.ObjectId] = serviceJSON
+
+		linkedServiceJSON, err := json.Marshal(service.LinkedService)
+		if err != nil {
+			return nil, err
+		}
+		flatMap[service.LinkedService.ObjectId] = linkedServiceJSON
+
+		costSharesServiceJSON, err := json.Marshal(service.PlanServiceCostShares)
+		if err != nil {
+			return nil, err
+		}
+		flatMap[service.PlanServiceCostShares.ObjectId] = costSharesServiceJSON
+	}
+
+	return flatMap, nil
+}
+
+func PatchItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		objectId := c.Param("ObjectId")
+		if objectId == "" {
+			c.AbortWithError(http.StatusBadRequest, errors.New("ObjectId must be provided"))
+			return
+		}
+
+		bodyBytes, err := ioutil.ReadAll(c.Request.Body)
+		if err != nil {
+			c.AbortWithError(http.StatusInternalServerError, errors.New("error reading request body"))
+			return
+		}
+
+		eTag := fmt.Sprintf(`"%x"`, sha256.Sum256(bodyBytes))
+		c.Header("ETag", eTag)
+
+		var item models.Plan
+		if err := json.Unmarshal(bodyBytes, &item); err != nil {
+			c.AbortWithError(http.StatusBadRequest, errors.New("error unmarshalling the json request"))
+			return
+		}
+
+		flatMap, err := FlattenPlan(item)
+		if err != nil {
+			log.Fatalf("Error flattening plan: %v", err)
+			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error flattening plan: %v", err))
+			return
+		}
+
+		// This example will update the item with the new flattened data
+		for _, jsonBlock := range flatMap {
+			// Convert jsonBlock back to a map for attributevalue.MarshalMap
+			var updateMap map[string]interface{}
+			if err := json.Unmarshal(jsonBlock, &updateMap); err != nil {
+				c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error preparing update data: %v", err))
+				return
+			}
+
+			av, err := attributevalue.MarshalMap(updateMap)
+			if err != nil {
+				c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error marshalling update data: %v", err))
+				return
+			}
+
+			key := map[string]types.AttributeValue{
+				"ObjectId": &types.AttributeValueMemberS{Value: objectId},
+			}
+
+			updateExpression := "SET"
+			expressionAttributeValues := map[string]types.AttributeValue{}
+			i := 0
+			for k, v := range av {
+				updateExpression += fmt.Sprintf(" %s = :val%d,", k, i)
+				expressionAttributeValues[fmt.Sprintf(":val%d", i)] = v
+				i++
+			}
+			updateExpression = updateExpression[:len(updateExpression)-1] // Remove the last comma
+
+			err = updateItem(svc, db.TableName, key, updateExpression, expressionAttributeValues)
+			if err != nil {
+				c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error updating item: %v", err))
+				return
+			}
+		}
+
+		c.Status(http.StatusOK)
+	}
 }

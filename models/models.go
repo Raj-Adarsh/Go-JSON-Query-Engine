@@ -17,8 +17,8 @@ type Plan struct {
 type CostShares struct {
 	Deductible *int   `json:"deductible" validate:"required,gt=-1"`
 	Org        string `json:"_org" validate:"required"`
-	Copay      *int   `json:"copay" validate:required",gt=-1"`
-	ObjectId   string `json:"objectId" validate:"required"`
+	Copay      *int   `json:"copay" validate:"required"`
+	ObjectId   string `json:"objectId" validate:"required,gt=-1"`
 	ObjectType string `json:"objectType" validate:"required"`
 }
 
