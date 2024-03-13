@@ -22,7 +22,7 @@ func ConnectToDB() *dynamodb.Client {
 				SigningRegion: "us-west-2",
 			}, nil
 		})),
-		config.WithClientLogMode(aws.LogSigning|aws.LogRequestWithBody),
+		// config.WithClientLogMode(aws.LogSigning|aws.LogRequestWithBody),
 	)
 
 	if err != nil {

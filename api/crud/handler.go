@@ -9,6 +9,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"reflect"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -21,34 +22,7 @@ import (
 	"crud_with_dynamodb/models"
 )
 
-// func validatePlan(plan models.Plan) error {
-// 	// Validate PlanCostShares
-// 	if plan.PlanCostShares.Org == "" || plan.PlanCostShares.ObjectId == "" || plan.PlanCostShares.ObjectType == "" {
-// 		return errors.New("missing required fields in PlanCostShares")
-// 	}
-
-// 	// Validate each LinkedPlanService
-// 	if len(plan.LinkedPlanServices) == 0 {
-// 		return errors.New("linkedPlanServices is required")
-// 	}
-
-// 	for _, service := range plan.LinkedPlanServices {
-// 		if service.Org == "" || service.ObjectId == "" || service.ObjectType == "" ||
-// 			service.LinkedService.Org == "" || service.LinkedService.ObjectId == "" ||
-// 			service.LinkedService.ObjectType == "" || service.LinkedService.Name == "" ||
-// 			service.PlanServiceCostShares.Org == "" || service.PlanServiceCostShares.ObjectId == "" ||
-// 			service.PlanServiceCostShares.ObjectType == "" {
-// 			return errors.New("missing required fields in LinkedPlanServices")
-// 		}
-// 	}
-
-// 	// Validate top-level Plan fields
-// 	if plan.Org == "" || plan.ObjectId == "" || plan.ObjectType == "" || plan.PlanType == "" {
-// 		return errors.New("missing required top-level Plan fields")
-// 	}
-
-// 	return nil
-// }
+const TOP_LEVEL_OBJECTID = "12xvxc345ssdsds-508"
 
 func CreateItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -76,6 +50,8 @@ func CreateItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 			return
 		}
 
+		log.Printf("Raw JSON request body: %s\n", string(bodyBytes))
+
 		eTag := fmt.Sprintf(`"%x"`, sha256.Sum256(bodyBytes))
 		c.Header("ETag", eTag)
 
@@ -85,37 +61,50 @@ func CreateItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 			return
 		}
 
-		err = models.ValidateStruct(item)
+		flatMap, err := FlattenPlan(item)
 		if err != nil {
-			fmt.Println(err)
-			c.AbortWithError(http.StatusBadRequest, fmt.Errorf("bad request: %v", err))
+			log.Fatalf("Error flattening plan: %v", err)
+			// Handle the error appropriately
+			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error flattening plan: %v", err))
 			return
 		}
 
-		if item.PlanCostShares.Copay == nil || item.PlanCostShares.Deductible == nil {
-			c.AbortWithError(http.StatusBadRequest, fmt.Errorf("bad request: %v", err))
-		}
+		// Iterate over flatMap and store each block in the database
+		for objectId, jsonBlock := range flatMap {
+			fmt.Printf("ObjectId: %s, JSON Block: %s\n", objectId, string(jsonBlock))
 
-		// if err := validatePlan(item); err != nil {
-		// 	c.AbortWithError(http.StatusBadRequest, fmt.Errorf("bad request: %v", err))
-		// 	return
-		// }
+			// Convert jsonBlock back to a map for attributevalue.MarshalMap
+			var blockMap map[string]interface{}
+			if err := json.Unmarshal(jsonBlock, &blockMap); err != nil {
+				c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error preparing data for objectId %s: %v", objectId, err))
+				return
+			}
 
-		av, err := attributevalue.MarshalMap(item)
-		if err != nil {
-			c.AbortWithError(http.StatusInternalServerError, err)
-			return
-		}
+			av, err := attributevalue.MarshalMap(blockMap)
+			if err != nil {
+				c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error marshalling data for objectId %s: %v", objectId, err))
+				return
+			}
 
-		if _, exists := av["ObjectId"]; !exists || av["ObjectId"].(*types.AttributeValueMemberS).Value == "" {
-			c.AbortWithError(http.StatusInternalServerError, errors.New("createItem() - ObjectId (primary key) is missing or empty"))
-			return
-		}
+			avJSON, err := json.MarshalIndent(av, "", "    ")
+			if err != nil {
+				log.Printf("Error marshalling av to JSON: %v", err)
+			} else {
+				log.Printf("AV data structure: %s", avJSON)
+			}
 
-		av["ETag"] = &types.AttributeValueMemberS{Value: eTag}
-		if err := createItem(svc, db.TableName, av, eTag); err != nil {
-			c.AbortWithError(http.StatusInternalServerError, err)
-			return
+			// // Add the objectId to the attribute values if not already present
+			// if _, exists := av["objectId"]; !exists {
+			// 	av["objectId"] = &types.AttributeValueMemberS{Value: objectId}
+			// }
+
+			// av["ETag"] = &types.AttributeValueMemberS{Value: eTag}
+
+			// Perform the database operation to store the item
+			if err := createItem(svc, db.TableName, av); err != nil {
+				c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error storing item with objectId %s: %v", objectId, err))
+				return
+			}
 		}
 
 		c.Status(http.StatusCreated)
@@ -128,12 +117,15 @@ func GetItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 			c.Status(http.StatusBadRequest)
 			return
 		}
-		objectId := c.Param("ObjectId")
-		key := map[string]types.AttributeValue{
-			"ObjectId": &types.AttributeValueMemberS{Value: objectId},
-		}
+		objectId := TOP_LEVEL_OBJECTID
 
-		item, eTag, err := getItem(svc, db.TableName, key)
+		// key := map[string]types.AttributeValue{
+		// 	"objectId": &types.AttributeValueMemberS{Value: objectId},
+		// }
+
+		plan, err := fetchPlanItem(svc, db.TableName, objectId)
+
+		// plan, _, err := getItem(svc, db.TableName, key)
 		if err != nil {
 			if err.Error() == "item not found" {
 				c.AbortWithStatus(http.StatusNotFound)
@@ -143,59 +135,277 @@ func GetItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 			return
 		}
 
-		c.Header("ETag", eTag)
-
-		ifMatch := c.GetHeader("If-None-Match")
-		if ifMatch == eTag {
-			c.Status(http.StatusNotModified)
+		// Marshal the plan into JSON
+		planJSON, err := json.Marshal(plan)
+		if err != nil {
+			log.Println("Error marshalling plan to JSON:", err)
+			c.AbortWithError(http.StatusInternalServerError, err)
 			return
 		}
 
-		c.JSON(http.StatusOK, item)
+		log.Printf("Plan after unmarshalling JSON: %s\n", string(planJSON))
+
+		// fmt.Println("ETAG: ", eTag)
+
+		// // c.Header("ETag", eTag)
+
+		// ifMatch := c.GetHeader("If-None-Match")
+		// fmt.Println("ifMatch: ", ifMatch)
+		// if ifMatch == eTag {
+		// 	c.Status(http.StatusNotModified)
+		// 	return
+		// }
+
+		// Write the JSON response
+		c.Data(http.StatusOK, "application/json", planJSON)
+		// c.JSON(http.StatusOK, item)
+
 	}
 }
 
-func GetAllItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
+func fetchPlanItem(svc *dynamodb.Client, tableName string, objectId string) (*models.Plan, error) {
+	key := map[string]types.AttributeValue{
+		"objectId": &types.AttributeValueMemberS{Value: objectId},
+	}
+
+	log.Println("Fetching item with key:", key)
+
+	plan, _, err := getItem(svc, db.TableName, key)
+	if err != nil {
+		if err.Error() == "item not found" {
+			// c.AbortWithStatus(http.StatusNotFound)
+			return nil, err
+		}
+		// c.AbortWithError(http.StatusInternalServerError, err)
+		return nil, err
+	}
+
+	// Marshal the plan into JSON for logging
+	planJSON, err := json.MarshalIndent(plan, "", "    ")
+	if err != nil {
+		log.Println("Error marshalling plan to JSON:", err)
+		return nil, err
+	}
+
+	log.Printf("DynamoDB attributes after unmarshal: %s\n", string(planJSON))
+
+	return plan, nil
+}
+
+func findObjectByID(obj interface{}, objectId string) (interface{}, bool) {
+	val := reflect.ValueOf(obj)
+	if val.Kind() == reflect.Ptr {
+		val = val.Elem()
+	}
+
+	// // Function to set _org field if missing or empty
+	// setOrgField := func(obj interface{}) {
+	// 	v := reflect.ValueOf(obj)
+	// 	if v.Kind() == reflect.Ptr {
+	// 		v = v.Elem()
+	// 	}
+	// 	if v.Kind() == reflect.Struct {
+	// 		orgField := v.FieldByName("_org")
+	// 		if orgField.IsValid() && orgField.CanSet() && orgField.Kind() == reflect.String {
+	// 			if orgField.String() == "" {
+	// 				orgField.SetString("example.com")
+	// 			}
+	// 		}
+	// 	}
+	// }
+
+	// Check if the object itself matches the objectId
+	if val.Kind() == reflect.Struct {
+		for i := 0; i < val.NumField(); i++ {
+			field := val.Field(i)
+			typeField := val.Type().Field(i)
+			if typeField.Name == "ObjectId" && field.Interface() == objectId {
+				// setOrgField(obj)
+				return obj, true
+			}
+		}
+	}
+
+	// Recursively check nested structs and slices
+	for i := 0; i < val.NumField(); i++ {
+		field := val.Field(i)
+		// Before recursing, check if the field is of kind struct or ptr (which could point to a struct)
+		if field.Kind() == reflect.Struct || (field.Kind() == reflect.Ptr && field.Elem().Kind() == reflect.Struct) {
+			if foundObj, found := findObjectByID(field.Interface(), objectId); found {
+				fmt.Printf("Found object 1: %+v\n", foundObj)
+				// setOrgField(foundObj)
+				return foundObj, true
+			}
+		} else if field.Kind() == reflect.Slice {
+			for j := 0; j < field.Len(); j++ {
+				sliceElem := field.Index(j)
+				// For slices, check if the element is a struct or a pointer to a struct before recursing
+				if sliceElem.Kind() == reflect.Struct || (sliceElem.Kind() == reflect.Ptr && sliceElem.Elem().Kind() == reflect.Struct) {
+					if foundObj, found := findObjectByID(sliceElem.Interface(), objectId); found {
+						fmt.Printf("Found object 2: %+v\n", foundObj)
+						// setOrgField(foundObj)
+						return foundObj, true
+					}
+				}
+			}
+		}
+	}
+
+	return nil, false
+}
+
+func GetItemByObjectIDHandler(svc *dynamodb.Client) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if len(c.Request.URL.RawQuery) > 0 {
-			c.Status(http.StatusBadRequest)
-			return
-		}
-		scanInput := &dynamodb.ScanInput{
-			TableName: aws.String(db.TableName),
-		}
-
-		scanResult, err := svc.Scan(context.TODO(), scanInput)
-		if err != nil {
-			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("failed to fetch items: %v", err))
+		objectId := c.Param("objectId")
+		if objectId == "" {
+			c.AbortWithError(http.StatusBadRequest, errors.New("ObjectId must be provided"))
 			return
 		}
 
-		// Unmarshal the results into your model slice
-		var items []models.Plan
-		err = attributevalue.UnmarshalListOfMaps(scanResult.Items, &items)
+		// object_id := TOP_LEVEL_OBJECTID
+		// key := map[string]types.AttributeValue{
+		// 	"objectId": &types.AttributeValueMemberS{Value: object_id},
+		// }
+
+		// plan, _, err := getItem(svc, db.TableName, key)
+		// if err != nil {
+		// 	if err.Error() == "item not found" {
+		// 		c.AbortWithStatus(http.StatusNotFound)
+		// 		return
+		// 	}
+		// 	c.AbortWithError(http.StatusInternalServerError, err)
+		// 	return
+		// }
+
+		plan, err := fetchPlanItem(svc, db.TableName, TOP_LEVEL_OBJECTID) // Use the top-level objectId for fetching
 		if err != nil {
-			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("failed to unmarshal items: %v", err))
+			log.Println("Error fetching json data for TOP_LEVEL_OBJECTID")
+			c.AbortWithError(http.StatusInternalServerError, err)
 			return
 		}
-		c.JSON(http.StatusOK, items)
+
+		// // Marshal the plan into JSON for logging
+		// planJSON, err := json.MarshalIndent(plan, "", "    ")
+		// if err != nil {
+		// 	log.Println("Error marshalling plan to JSON:", err)
+		// 	return
+		// }
+
+		// log.Printf("DynamoDB attributes after unmarshal in object by ID: %s\n", string(planJSON))
+
+		// log.Println("Plan is:", plan)
+
+		if response, found := findObjectByID(plan, objectId); found {
+			log.Println("Found ObjectID Match")
+
+			// Assuming you want to inspect or modify the response before sending it back
+			responseJSON, err := json.Marshal(response)
+			if err != nil {
+				log.Println("Error marshalling found object to JSON:", err)
+				c.AbortWithError(http.StatusInternalServerError, err)
+				return
+			}
+
+			// Optionally, log the JSON or inspect it
+			log.Printf("Response JSON: %s\n", string(responseJSON))
+
+			// If you need to modify the response, unmarshal it into a map or struct here
+			// For example, unmarshal into a map to inspect or modify
+			var responseMap map[string]interface{}
+			err = json.Unmarshal(responseJSON, &responseMap)
+			if err != nil {
+				log.Println("Error unmarshalling response JSON:", err)
+				c.AbortWithError(http.StatusInternalServerError, err)
+				return
+			}
+
+			// Perform any necessary checks or modifications
+			// For example, check if 'org' field is present and not empty
+			if org, ok := responseMap["_org"].(string); !ok || org == "" {
+				log.Println("Org field is missing or empty")
+				// Handle the missing or empty 'org' field as needed
+				// responseMap["_org"] = "example.com"
+			}
+
+			// Finally, send the response
+			// If modifications were made, marshal the map back into JSON
+			modifiedResponseJSON, err := json.Marshal(responseMap)
+			if err != nil {
+				log.Println("Error marshalling modified response:", err)
+				c.AbortWithError(http.StatusInternalServerError, err)
+				return
+			}
+
+			c.Data(http.StatusOK, "application/json", modifiedResponseJSON)
+			return
+		}
+
+		c.AbortWithStatus(http.StatusNotFound)
 	}
 }
 
 func UpdateItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		objectId := c.Param("objectId")
-		updateExpression := "SET #attrName = :attrValue"
-		expressionAttributeValues := map[string]types.AttributeValue{
-			":attrValue": &types.AttributeValueMemberS{Value: "newValue"},
-		}
-		key := map[string]types.AttributeValue{
-			"objectId": &types.AttributeValueMemberS{Value: objectId},
+		if objectId == "" {
+			c.AbortWithError(http.StatusBadRequest, errors.New("ObjectId must be provided"))
+			return
 		}
 
-		if err := updateItem(svc, db.TableName, key, updateExpression, expressionAttributeValues); err != nil {
-			c.AbortWithError(http.StatusInternalServerError, err)
+		bodyBytes, err := ioutil.ReadAll(c.Request.Body)
+		if err != nil {
+			c.AbortWithError(http.StatusInternalServerError, errors.New("error reading request body"))
 			return
+		}
+
+		var item models.Plan
+		if err := json.Unmarshal(bodyBytes, &item); err != nil {
+			c.AbortWithError(http.StatusBadRequest, errors.New("error unmarshalling the json request"))
+			return
+		}
+
+		flatMap, err := FlattenPlan(item)
+		if err != nil {
+			log.Fatalf("Error flattening plan: %v", err)
+			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error flattening plan: %v", err))
+			return
+		}
+
+		// Iterate over flatMap and update each block in the database
+		for _, jsonBlock := range flatMap {
+			// Convert jsonBlock back to a map for attributevalue.MarshalMap
+			var updateMap map[string]interface{}
+			if err := json.Unmarshal(jsonBlock, &updateMap); err != nil {
+				c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error preparing update data: %v", err))
+				return
+			}
+
+			av, err := attributevalue.MarshalMap(updateMap)
+			if err != nil {
+				c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error marshalling update data: %v", err))
+				return
+			}
+
+			// Construct the update expression and attribute values
+			updateExpression := "SET"
+			expressionAttributeValues := map[string]types.AttributeValue{}
+			i := 0
+			for k, v := range av {
+				updateExpression += fmt.Sprintf(" %s = :val%d,", k, i)
+				expressionAttributeValues[fmt.Sprintf(":val%d", i)] = v
+				i++
+			}
+			updateExpression = updateExpression[:len(updateExpression)-1] // Remove the last comma
+
+			// Perform the update operation
+			key := map[string]types.AttributeValue{
+				"objectId": &types.AttributeValueMemberS{Value: objectId},
+			}
+			err = updateItem(svc, db.TableName, key, updateExpression, expressionAttributeValues)
+			if err != nil {
+				c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error updating item: %v", err))
+				return
+			}
 		}
 
 		c.Status(http.StatusOK)
@@ -208,9 +418,9 @@ func DeleteItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 			c.Status(http.StatusBadRequest)
 			return
 		}
-		objectId := c.Param("ObjectId")
+		objectId := c.Param("objectId")
 		key := map[string]types.AttributeValue{
-			"ObjectId": &types.AttributeValueMemberS{Value: objectId},
+			"objectId": &types.AttributeValueMemberS{Value: objectId},
 		}
 
 		_, _, err := getItem(svc, db.TableName, key)
@@ -247,13 +457,13 @@ func CreateTable(svc *dynamodb.Client, tableName string) {
 		TableName: aws.String("PLAN_TABLE"),
 		KeySchema: []types.KeySchemaElement{
 			{
-				AttributeName: aws.String("ObjectId"),
+				AttributeName: aws.String("objectId"),
 				KeyType:       types.KeyTypeHash,
 			},
 		},
 		AttributeDefinitions: []types.AttributeDefinition{
 			{
-				AttributeName: aws.String("ObjectId"),
+				AttributeName: aws.String("objectId"),
 				AttributeType: types.ScalarAttributeTypeS,
 			},
 		},
@@ -294,8 +504,21 @@ func waitForTableToBeReady(svc *dynamodb.Client, tableName string) error {
 	return nil
 }
 
-func createItem(svc *dynamodb.Client, tableName string, av map[string]types.AttributeValue, eTag string) error {
-	av["ETag"] = &types.AttributeValueMemberS{Value: eTag}
+func createItem(svc *dynamodb.Client, tableName string, av map[string]types.AttributeValue) error {
+	// av["ETag"] = &types.AttributeValueMemberS{Value: eTag}
+
+	// Check if the item already exists
+	existingItem, _, err := getItem(svc, tableName, map[string]types.AttributeValue{
+		"objectId": av["objectId"],
+	})
+	if err != nil && err.Error() != "item not found" {
+		// An error occurred while checking for the item, other than not finding it
+		return fmt.Errorf("error checking for existing item: %v", err)
+	}
+	if existingItem != nil {
+		// Item already exists, handle accordingly
+		return fmt.Errorf("item with objectId %s already exists", av["objectId"].(*types.AttributeValueMemberS).Value)
+	}
 
 	input := &dynamodb.PutItemInput{
 		Item:      av,
@@ -307,7 +530,7 @@ func createItem(svc *dynamodb.Client, tableName string, av map[string]types.Attr
 		log.Fatalf("Error formatting input: %v", err)
 	}
 
-	fmt.Printf("INPUT: %s\n", string(formatted))
+	fmt.Printf("INPUT in the DB: %s\n", string(formatted))
 
 	_, err = svc.PutItem(context.TODO(), input)
 	return err
@@ -328,23 +551,13 @@ func getItem(svc *dynamodb.Client, tableName string, key map[string]types.Attrib
 		return nil, "", errors.New("item not found")
 	}
 
-	plan := models.Plan{}
+	var plan models.Plan
 	err = attributevalue.UnmarshalMap(result.Item, &plan)
 	if err != nil {
 		return nil, "", err
 	}
 
-	// Extract the ETag from the result item
-	eTagValue, exists := result.Item["ETag"]
-	if !exists {
-		return &plan, "", nil
-	}
-	eTag, ok := eTagValue.(*types.AttributeValueMemberS)
-	if !ok {
-		return &plan, "", errors.New("ETag format is invalid")
-	}
-
-	return &plan, eTag.Value, nil
+	return &plan, "", nil
 
 }
 
@@ -382,4 +595,115 @@ func deleteItem(svc *dynamodb.Client, tableName string, key map[string]types.Att
 
 	_, err := svc.DeleteItem(context.TODO(), input)
 	return err
+}
+
+func FlattenPlan(plan models.Plan) (map[string]json.RawMessage, error) {
+	flatMap := make(map[string]json.RawMessage)
+
+	// Serialize the top-level plan and add it to the map
+	planJSON, err := json.Marshal(plan)
+	if err != nil {
+		return nil, err
+	}
+	flatMap[plan.ObjectId] = planJSON
+
+	// Serialize PlanCostShares
+	costSharesJSON, err := json.Marshal(plan.PlanCostShares)
+	if err != nil {
+		return nil, err
+	}
+	flatMap[plan.PlanCostShares.ObjectId] = costSharesJSON
+
+	// Iterate over LinkedPlanServices and serialize each one along with its LinkedService and PlanServiceCostShares
+	for _, service := range plan.LinkedPlanServices {
+		serviceJSON, err := json.Marshal(service)
+		if err != nil {
+			return nil, err
+		}
+		flatMap[service.ObjectId] = serviceJSON
+
+		linkedServiceJSON, err := json.Marshal(service.LinkedService)
+		if err != nil {
+			return nil, err
+		}
+		flatMap[service.LinkedService.ObjectId] = linkedServiceJSON
+
+		costSharesServiceJSON, err := json.Marshal(service.PlanServiceCostShares)
+		if err != nil {
+			return nil, err
+		}
+		flatMap[service.PlanServiceCostShares.ObjectId] = costSharesServiceJSON
+	}
+
+	return flatMap, nil
+}
+
+func PatchItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		objectId := c.Param("objectId")
+		if objectId == "" {
+			c.AbortWithError(http.StatusBadRequest, errors.New("ObjectId must be provided"))
+			return
+		}
+
+		bodyBytes, err := ioutil.ReadAll(c.Request.Body)
+		if err != nil {
+			c.AbortWithError(http.StatusInternalServerError, errors.New("error reading request body"))
+			return
+		}
+
+		eTag := fmt.Sprintf(`"%x"`, sha256.Sum256(bodyBytes))
+		c.Header("ETag", eTag)
+
+		var item models.Plan
+		if err := json.Unmarshal(bodyBytes, &item); err != nil {
+			c.AbortWithError(http.StatusBadRequest, errors.New("error unmarshalling the json request"))
+			return
+		}
+
+		flatMap, err := FlattenPlan(item)
+		if err != nil {
+			log.Fatalf("Error flattening plan: %v", err)
+			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error flattening plan: %v", err))
+			return
+		}
+
+		// This example will update the item with the new flattened data
+		for _, jsonBlock := range flatMap {
+			// Convert jsonBlock back to a map for attributevalue.MarshalMap
+			var updateMap map[string]interface{}
+			if err := json.Unmarshal(jsonBlock, &updateMap); err != nil {
+				c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error preparing update data: %v", err))
+				return
+			}
+
+			av, err := attributevalue.MarshalMap(updateMap)
+			if err != nil {
+				c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error marshalling update data: %v", err))
+				return
+			}
+
+			key := map[string]types.AttributeValue{
+				"objectId": &types.AttributeValueMemberS{Value: objectId},
+			}
+
+			updateExpression := "SET"
+			expressionAttributeValues := map[string]types.AttributeValue{}
+			i := 0
+			for k, v := range av {
+				updateExpression += fmt.Sprintf(" %s = :val%d,", k, i)
+				expressionAttributeValues[fmt.Sprintf(":val%d", i)] = v
+				i++
+			}
+			updateExpression = updateExpression[:len(updateExpression)-1] // Remove the last comma
+
+			err = updateItem(svc, db.TableName, key, updateExpression, expressionAttributeValues)
+			if err != nil {
+				c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error updating item: %v", err))
+				return
+			}
+		}
+
+		c.Status(http.StatusOK)
+	}
 }
