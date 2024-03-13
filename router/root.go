@@ -44,11 +44,11 @@ func InitRouter(oauthConfig *oauth2.Config) *gin.Engine {
 	api := r.Group("/v1", auth.AuthMiddleware(oauthConfig))
 	{
 		api.POST("/plan", crud.CreateItemHandler(svc))
-		api.GET("/plan/:ObjectId", crud.GetItemHandler(svc))
+		api.GET("/plan/all", crud.GetItemHandler(svc))
 		api.DELETE("/plan/del/:ObjectId", crud.DeleteItemHandler(svc))
 		api.PATCH("/plan/patch/:ObjectId", crud.PatchItemHandler(svc))
 		api.PUT("/items/:ObjectId", crud.UpdateItemHandler(svc))
-		api.GET("/plan/id/:ObjectId", crud.GetItemByObjectIDHandler(svc))
+		api.GET("/plan/:ObjectId", crud.GetItemByObjectIDHandler(svc))
 	}
 
 	// r.POST("/v1/plan", crud.CreateItemHandler(svc))
