@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -344,73 +345,73 @@ func GetItemByObjectIDHandler(svc *dynamodb.Client) gin.HandlerFunc {
 	}
 }
 
-func UpdateItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		objectId := c.Param("objectId")
-		if objectId == "" {
-			c.AbortWithError(http.StatusBadRequest, errors.New("ObjectId must be provided"))
-			return
-		}
+// func UpdateItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
+// 	return func(c *gin.Context) {
+// 		objectId := c.Param("objectId")
+// 		if objectId == "" {
+// 			c.AbortWithError(http.StatusBadRequest, errors.New("ObjectId must be provided"))
+// 			return
+// 		}
 
-		bodyBytes, err := ioutil.ReadAll(c.Request.Body)
-		if err != nil {
-			c.AbortWithError(http.StatusInternalServerError, errors.New("error reading request body"))
-			return
-		}
+// 		bodyBytes, err := ioutil.ReadAll(c.Request.Body)
+// 		if err != nil {
+// 			c.AbortWithError(http.StatusInternalServerError, errors.New("error reading request body"))
+// 			return
+// 		}
 
-		var item models.Plan
-		if err := json.Unmarshal(bodyBytes, &item); err != nil {
-			c.AbortWithError(http.StatusBadRequest, errors.New("error unmarshalling the json request"))
-			return
-		}
+// 		var item models.Plan
+// 		if err := json.Unmarshal(bodyBytes, &item); err != nil {
+// 			c.AbortWithError(http.StatusBadRequest, errors.New("error unmarshalling the json request"))
+// 			return
+// 		}
 
-		flatMap, err := FlattenPlan(item)
-		if err != nil {
-			log.Fatalf("Error flattening plan: %v", err)
-			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error flattening plan: %v", err))
-			return
-		}
+// 		flatMap, err := FlattenPlan(item)
+// 		if err != nil {
+// 			log.Fatalf("Error flattening plan: %v", err)
+// 			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error flattening plan: %v", err))
+// 			return
+// 		}
 
-		// Iterate over flatMap and update each block in the database
-		for _, jsonBlock := range flatMap {
-			// Convert jsonBlock back to a map for attributevalue.MarshalMap
-			var updateMap map[string]interface{}
-			if err := json.Unmarshal(jsonBlock, &updateMap); err != nil {
-				c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error preparing update data: %v", err))
-				return
-			}
+// 		// Iterate over flatMap and update each block in the database
+// 		for _, jsonBlock := range flatMap {
+// 			// Convert jsonBlock back to a map for attributevalue.MarshalMap
+// 			var updateMap map[string]interface{}
+// 			if err := json.Unmarshal(jsonBlock, &updateMap); err != nil {
+// 				c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error preparing update data: %v", err))
+// 				return
+// 			}
 
-			av, err := attributevalue.MarshalMap(updateMap)
-			if err != nil {
-				c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error marshalling update data: %v", err))
-				return
-			}
+// 			av, err := attributevalue.MarshalMap(updateMap)
+// 			if err != nil {
+// 				c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error marshalling update data: %v", err))
+// 				return
+// 			}
 
-			// Construct the update expression and attribute values
-			updateExpression := "SET"
-			expressionAttributeValues := map[string]types.AttributeValue{}
-			i := 0
-			for k, v := range av {
-				updateExpression += fmt.Sprintf(" %s = :val%d,", k, i)
-				expressionAttributeValues[fmt.Sprintf(":val%d", i)] = v
-				i++
-			}
-			updateExpression = updateExpression[:len(updateExpression)-1] // Remove the last comma
+// 			// Construct the update expression and attribute values
+// 			updateExpression := "SET"
+// 			expressionAttributeValues := map[string]types.AttributeValue{}
+// 			i := 0
+// 			for k, v := range av {
+// 				updateExpression += fmt.Sprintf(" %s = :val%d,", k, i)
+// 				expressionAttributeValues[fmt.Sprintf(":val%d", i)] = v
+// 				i++
+// 			}
+// 			updateExpression = updateExpression[:len(updateExpression)-1] // Remove the last comma
 
-			// Perform the update operation
-			key := map[string]types.AttributeValue{
-				"objectId": &types.AttributeValueMemberS{Value: objectId},
-			}
-			err = updateItem(svc, db.TableName, key, updateExpression, expressionAttributeValues)
-			if err != nil {
-				c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error updating item: %v", err))
-				return
-			}
-		}
+// 			// Perform the update operation
+// 			key := map[string]types.AttributeValue{
+// 				"objectId": &types.AttributeValueMemberS{Value: objectId},
+// 			}
+// 			err = updateItem(svc, db.TableName, key, updateExpression, expressionAttributeValues)
+// 			if err != nil {
+// 				c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error updating item: %v", err))
+// 				return
+// 			}
+// 		}
 
-		c.Status(http.StatusOK)
-	}
-}
+// 		c.Status(http.StatusOK)
+// 	}
+// }
 
 func DeleteItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -561,12 +562,25 @@ func getItem(svc *dynamodb.Client, tableName string, key map[string]types.Attrib
 
 }
 
-func updateItem(svc *dynamodb.Client, tableName string, key map[string]types.AttributeValue, updateExpression string, expressionAttributeValues map[string]types.AttributeValue) error {
+// func updateItem(svc *dynamodb.Client, tableName string, key map[string]types.AttributeValue, updateExpression string, expressionAttributeValues map[string]types.AttributeValue) error {
+// 	input := &dynamodb.UpdateItemInput{
+// 		Key:                       key,
+// 		TableName:                 aws.String(tableName),
+// 		UpdateExpression:          aws.String(updateExpression),
+// 		ExpressionAttributeValues: expressionAttributeValues,
+// 	}
+
+// 	_, err := svc.UpdateItem(context.TODO(), input)
+// 	return err
+// }
+
+func updateItem(svc *dynamodb.Client, tableName string, key map[string]types.AttributeValue, updateExpression string, expressionAttributeValues map[string]types.AttributeValue, expressionAttributeNames map[string]string) error {
 	input := &dynamodb.UpdateItemInput{
 		Key:                       key,
 		TableName:                 aws.String(tableName),
 		UpdateExpression:          aws.String(updateExpression),
 		ExpressionAttributeValues: expressionAttributeValues,
+		ExpressionAttributeNames:  expressionAttributeNames, // Add this line
 	}
 
 	_, err := svc.UpdateItem(context.TODO(), input)
@@ -661,6 +675,62 @@ func PatchItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 			return
 		}
 
+		// Check if objectId is being updated
+		if item.ObjectId != "" && item.ObjectId != objectId {
+			// Create a new item with the new objectId
+			// Note: You might need to adjust this to ensure all necessary data is included
+			if err := createNewItemWithNewObjectId(svc, item); err != nil {
+				c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error creating item with new objectId: %v", err))
+				return
+			}
+
+			// Delete the old item
+			if err := deleteItem(svc, db.TableName, map[string]types.AttributeValue{"objectId": &types.AttributeValueMemberS{Value: objectId}}); err != nil {
+				c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error deleting old item: %v", err))
+				return
+			}
+
+			c.Status(http.StatusOK)
+			return
+		}
+
+		// Fetch the current plan item from the database
+		currentPlan, err := fetchPlanItem(svc, db.TableName, TOP_LEVEL_OBJECTID)
+		if err != nil {
+			log.Fatalf("Error fetching current plan: %v", err)
+			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error fetching current plan: %v", err))
+			return
+		}
+
+		// Check if the patch is for linkedPlanServices
+		if len(item.LinkedPlanServices) > 0 {
+			// Add the new linkedPlanServices to the current plan's array
+			currentPlan.LinkedPlanServices = append(currentPlan.LinkedPlanServices, item.LinkedPlanServices...)
+		} else {
+			// Handle other updates normally
+			// This part of the code will handle updates to planCostShares and plan
+			// You can add logic here to replace the entire object with new data as per your requirement
+			if item.PlanCostShares != (models.CostShares{}) {
+				currentPlan.PlanCostShares = item.PlanCostShares
+			}
+			// Update top-level plan attributes if they are present in the request
+			if item.Org != "" {
+				currentPlan.Org = item.Org
+			}
+			if item.ObjectType != "" {
+				currentPlan.ObjectType = item.ObjectType
+			}
+			if item.PlanType != "" {
+				currentPlan.PlanType = item.PlanType
+			}
+			if item.CreationDate != "" {
+				currentPlan.CreationDate = item.CreationDate
+			}
+			// if item.ObjectId != "" {
+			// 	currentPlan.ObjectId = item.ObjectId
+			// }
+		}
+
 		flatMap, err := FlattenPlan(item)
 		if err != nil {
 			log.Fatalf("Error flattening plan: %v", err)
@@ -688,22 +758,76 @@ func PatchItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 			}
 
 			updateExpression := "SET"
+			expressionAttributeNames := make(map[string]string) // Correctly initialize the map
 			expressionAttributeValues := map[string]types.AttributeValue{}
 			i := 0
+			// for k, v := range av {
+			// 	updateExpression += fmt.Sprintf(" %s = :val%d,", k, i)
+			// 	expressionAttributeValues[fmt.Sprintf(":val%d", i)] = v
+			// 	i++
+			// }
+
+			// for k, v := range av {
+			// 	if k == "objectId" {
+			// 		continue // Skip attempting to update objectId
+			// 	}
+			// 	updateExpression += fmt.Sprintf(" %s = :val%d,", k, i)
+			// 	expressionAttributeValues[fmt.Sprintf(":val%d", i)] = v
+			// 	i++
+			// }
+
+			// updateExpression = updateExpression[:len(updateExpression)-1] // Remove the last comma
+
+			// err = updateItem(svc, db.TableName, key, updateExpression, expressionAttributeValues)
+			// if err != nil {
+			// 	c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error updating item: %v", err))
+			// 	return
+			// }
 			for k, v := range av {
-				updateExpression += fmt.Sprintf(" %s = :val%d,", k, i)
-				expressionAttributeValues[fmt.Sprintf(":val%d", i)] = v
+				if k == "objectId" {
+					continue // Skip attempting to update objectId
+				}
+				// Use expression attribute names for reserved keywords
+				expressionAttributeName := fmt.Sprintf("#attr%d", i)
+				expressionAttributeValue := fmt.Sprintf(":val%d", i)
+
+				updateExpression += fmt.Sprintf(" %s = %s,", expressionAttributeName, expressionAttributeValue)
+				expressionAttributeValues[expressionAttributeValue] = v
+				// Map the expression attribute name to the actual attribute name
+				if expressionAttributeNames == nil {
+					expressionAttributeNames = make(map[string]string)
+				}
+				expressionAttributeNames[expressionAttributeName] = k
 				i++
 			}
-			updateExpression = updateExpression[:len(updateExpression)-1] // Remove the last comma
+			updateExpression = strings.TrimSuffix(updateExpression, ",") // A more idiomatic way to remove the last comma
 
-			err = updateItem(svc, db.TableName, key, updateExpression, expressionAttributeValues)
+			// Ensure your updateItem call includes expressionAttributeNames:
+			err = updateItem(svc, db.TableName, key, updateExpression, expressionAttributeValues, expressionAttributeNames)
 			if err != nil {
 				c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error updating item: %v", err))
 				return
 			}
+
 		}
 
 		c.Status(http.StatusOK)
 	}
+}
+
+func createNewItemWithNewObjectId(svc *dynamodb.Client, item models.Plan) error {
+	// Convert the item to a map[string]types.AttributeValue
+	av, err := attributevalue.MarshalMap(item)
+	if err != nil {
+		return err
+	}
+
+	// Create the new item in DynamoDB
+	input := &dynamodb.PutItemInput{
+		Item:      av,
+		TableName: aws.String(db.TableName),
+	}
+
+	_, err = svc.PutItem(context.TODO(), input)
+	return err
 }
