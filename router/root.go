@@ -21,7 +21,7 @@ func InitRouter(oauthConfig *oauth2.Config) *gin.Engine {
 		api.GET("/plan/all", crud.GetItemHandler(svc))
 		api.DELETE("/plan/del/:objectId", crud.DeleteItemHandler(svc))
 		api.PATCH("/plan/patch/:objectId", crud.PatchItemHandler(svc))
-		// api.PUT("/items/:objectId", crud.UpdateItemHandler(svc))
+		api.PUT("/plan/:objectId", crud.UpdateItemHandler(svc))
 		api.GET("/plan/:objectId", crud.GetItemByObjectIDHandler(svc))
 	}
 	return r
