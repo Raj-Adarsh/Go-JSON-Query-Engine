@@ -540,74 +540,6 @@ func GetItemByObjectIDHandler(svc *dynamodb.Client) gin.HandlerFunc {
 	}
 }
 
-// func UpdateItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
-// 	return func(c *gin.Context) {
-// 		objectId := c.Param("objectId")
-// 		if objectId == "" {
-// 			c.AbortWithError(http.StatusBadRequest, errors.New("ObjectId must be provided"))
-// 			return
-// 		}
-
-// 		bodyBytes, err := ioutil.ReadAll(c.Request.Body)
-// 		if err != nil {
-// 			c.AbortWithError(http.StatusInternalServerError, errors.New("error reading request body"))
-// 			return
-// 		}
-
-// 		var item models.Plan
-// 		if err := json.Unmarshal(bodyBytes, &item); err != nil {
-// 			c.AbortWithError(http.StatusBadRequest, errors.New("error unmarshalling the json request"))
-// 			return
-// 		}
-
-// 		flatMap, err := FlattenPlan(item)
-// 		if err != nil {
-// 			log.Fatalf("Error flattening plan: %v", err)
-// 			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error flattening plan: %v", err))
-// 			return
-// 		}
-
-// 		// Iterate over flatMap and update each block in the database
-// 		for _, jsonBlock := range flatMap {
-// 			// Convert jsonBlock back to a map for attributevalue.MarshalMap
-// 			var updateMap map[string]interface{}
-// 			if err := json.Unmarshal(jsonBlock, &updateMap); err != nil {
-// 				c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error preparing update data: %v", err))
-// 				return
-// 			}
-
-// 			av, err := attributevalue.MarshalMap(updateMap)
-// 			if err != nil {
-// 				c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error marshalling update data: %v", err))
-// 				return
-// 			}
-
-// 			// Construct the update expression and attribute values
-// 			updateExpression := "SET"
-// 			expressionAttributeValues := map[string]types.AttributeValue{}
-// 			i := 0
-// 			for k, v := range av {
-// 				updateExpression += fmt.Sprintf(" %s = :val%d,", k, i)
-// 				expressionAttributeValues[fmt.Sprintf(":val%d", i)] = v
-// 				i++
-// 			}
-// 			updateExpression = updateExpression[:len(updateExpression)-1] // Remove the last comma
-
-// 			// Perform the update operation
-// 			key := map[string]types.AttributeValue{
-// 				"objectId": &types.AttributeValueMemberS{Value: objectId},
-// 			}
-// 			err = updateItem(svc, db.TableName, key, updateExpression, expressionAttributeValues)
-// 			if err != nil {
-// 				c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error updating item: %v", err))
-// 				return
-// 			}
-// 		}
-
-// 		c.Status(http.StatusOK)
-// 	}
-// }
-
 func UpdateItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		objectId := c.Param("objectId")
@@ -622,60 +554,350 @@ func UpdateItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 			return
 		}
 
-		// Assuming the body contains the fields to update in JSON format
-		var updates map[string]interface{}
-		if err := json.Unmarshal(bodyBytes, &updates); err != nil {
+		// Unmarshal the body into your struct
+		var item models.Plan
+		if err := json.Unmarshal(bodyBytes, &item); err != nil {
 			c.AbortWithError(http.StatusBadRequest, errors.New("error unmarshalling the json request"))
 			return
 		}
 
-		// Remove objectId from updates if present to avoid trying to update the primary key
-		delete(updates, "objectId")
-
-		// Convert updates to AttributeValue map
-		av, err := attributevalue.MarshalMap(updates)
+		////////////////
+		// Marshal the plan into JSON
+		// After potentially modifying the item, marshal it back to JSON
+		canonicalBytes, err := json.Marshal(item)
 		if err != nil {
-			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error marshalling updates: %v", err))
+			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error marshalling item to JSON: %v", err))
 			return
 		}
 
-		// Construct the update expression and attribute values
-		updateExpression := "SET"
-		expressionAttributeValues := map[string]types.AttributeValue{}
-		expressionAttributeNames := map[string]string{}
-		i := 0
-		for k, v := range av {
-			placeholder := fmt.Sprintf(":val%d", i)
-			attributeNamePlaceholder := fmt.Sprintf("#attrName%d", i)
-			updateExpression += fmt.Sprintf(" %s = %s,", attributeNamePlaceholder, placeholder)
-			expressionAttributeValues[placeholder] = v
-			expressionAttributeNames[attributeNamePlaceholder] = k
-			i++
-		}
-		updateExpression = strings.TrimRight(updateExpression, ",")
+		requestETag := fmt.Sprintf(`"%x"`, sha256.Sum256(canonicalBytes))
 
-		key := map[string]types.AttributeValue{
-			"objectId": &types.AttributeValueMemberS{Value: objectId},
-		}
+		log.Printf("Plan after unmarshalling JSON: %s\n", string(canonicalBytes))
 
-		input := &dynamodb.UpdateItemInput{
-			TableName:                 aws.String(db.TableName),
-			Key:                       key,
-			UpdateExpression:          aws.String(updateExpression),
-			ExpressionAttributeValues: expressionAttributeValues,
-			ExpressionAttributeNames:  expressionAttributeNames,
-			ReturnValues:              types.ReturnValueUpdatedNew,
-		}
-
-		_, err = svc.UpdateItem(context.TODO(), input)
+		// Retrieve the ETag for the current state of the resource on the server
+		currentETag, err := getCurrentResourceETag(svc, db.TableName, TOP_LEVEL_OBJECTID)
 		if err != nil {
-			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error updating item: %v", err))
+			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error retrieving current resource ETag: %v", err))
 			return
 		}
+
+		fmt.Println("Current ETag", currentETag)
+
+		ifMatch := c.GetHeader("If-Match")
+		// No If-Match header present means we can't perform the conditional check
+		// if ifMatch == "" {
+		// 	c.AbortWithError(http.StatusBadRequest, errors.New("If-Match header must be provided"))
+		// 	return
+		// }
+		fmt.Println("ETag for if-match", ifMatch)
+
+		// Compare If-Match ETag with current resource's ETag
+		if ifMatch != currentETag {
+			// ETags do not match, the resource has changed since the ETag was generated
+			c.AbortWithStatus(http.StatusPreconditionFailed)
+			return
+		}
+
+		////////////////
+
+		// Flatten the plan to get the individual items
+		flatMap, err := FlattenPlan(item)
+		if err != nil {
+			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error flattening plan: %v", err))
+			return
+		}
+
+		// Perform a Scan to get all the item keys
+		scanOutput, err := svc.Scan(context.TODO(), &dynamodb.ScanInput{
+			TableName:       aws.String(db.TableName),
+			AttributesToGet: []string{"objectId"},
+		})
+		if err != nil {
+			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error scanning table: %v", err))
+			return
+		}
+
+		// Use BatchWriteItem to delete the scanned items
+		var writeRequests []types.WriteRequest
+		for _, item := range scanOutput.Items {
+			writeRequests = append(writeRequests, types.WriteRequest{
+				DeleteRequest: &types.DeleteRequest{
+					Key: item,
+				},
+			})
+		}
+
+		// Delete items in batches of 25
+		for len(writeRequests) > 0 {
+			endIndex := 25
+			if len(writeRequests) < 25 {
+				endIndex = len(writeRequests)
+			}
+
+			batchInput := &dynamodb.BatchWriteItemInput{
+				RequestItems: map[string][]types.WriteRequest{
+					db.TableName: writeRequests[:endIndex],
+				},
+			}
+			_, err = svc.BatchWriteItem(context.TODO(), batchInput)
+			if err != nil {
+				c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error in batch delete: %v", err))
+				return
+			}
+			writeRequests = writeRequests[endIndex:]
+		}
+		// Iterate over flatMap and store each block in the database
+		for objectId, jsonBlock := range flatMap {
+			fmt.Printf("ObjectId: %s, JSON Block: %s\n", objectId, string(jsonBlock))
+
+			// Convert jsonBlock back to a map for attributevalue.MarshalMap
+			var blockMap map[string]interface{}
+			if err := json.Unmarshal(jsonBlock, &blockMap); err != nil {
+				c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error preparing data for objectId %s: %v", objectId, err))
+				return
+			}
+
+			av, err := attributevalue.MarshalMap(blockMap)
+			if err != nil {
+				c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error marshalling data for objectId %s: %v", objectId, err))
+				return
+			}
+
+			avJSON, err := json.MarshalIndent(av, "", "    ")
+			if err != nil {
+				log.Printf("Error marshalling av to JSON: %v", err)
+			} else {
+				log.Printf("AV data structure: %s", avJSON)
+			}
+
+			// // Add the objectId to the attribute values if not already present
+			// if _, exists := av["objectId"]; !exists {
+			// 	av["objectId"] = &types.AttributeValueMemberS{Value: objectId}
+			// }
+
+			// av["ETag"] = &types.AttributeValueMemberS{Value: eTag}
+
+			// Perform the database operation to store the item
+			if err := createItem(svc, db.TableName, av); err != nil {
+				c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error storing item with objectId %s: %v", objectId, err))
+				return
+			}
+		}
+
+		c.Header("ETag", requestETag)
 
 		c.Status(http.StatusOK)
+		////////////////////////////////////
+
+		// var item models.Plan
+		// if err := json.Unmarshal(bodyBytes, &item); err != nil {
+		// 	c.AbortWithError(http.StatusBadRequest, errors.New("error unmarshalling the json request"))
+		// 	return
+		// }
+
+		// flatMap, err := FlattenPlan(item)
+		// if err != nil {
+		// 	log.Fatalf("Error flattening plan: %v", err)
+		// 	c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error flattening plan: %v", err))
+		// 	return
+		// }
+
+		// // Iterate over flatMap and update each block in the database
+		// for _, jsonBlock := range flatMap {
+		// 	// Convert jsonBlock back to a map for attributevalue.MarshalMap
+		// 	var updateMap map[string]interface{}
+		// 	if err := json.Unmarshal(jsonBlock, &updateMap); err != nil {
+		// 		c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error preparing update data: %v", err))
+		// 		return
+		// 	}
+
+		// 	av, err := attributevalue.MarshalMap(updateMap)
+		// 	if err != nil {
+		// 		c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error marshalling update data: %v", err))
+		// 		return
+		// 	}
+
+		// 	// Construct the update expression and attribute values
+		// 	updateExpression := "SET"
+		// 	expressionAttributeValues := map[string]types.AttributeValue{}
+		// 	i := 0
+		// 	for k, v := range av {
+		// 		updateExpression += fmt.Sprintf(" %s = :val%d,", k, i)
+		// 		expressionAttributeValues[fmt.Sprintf(":val%d", i)] = v
+		// 		i++
+		// 	}
+		// 	updateExpression = updateExpression[:len(updateExpression)-1] // Remove the last comma
+
+		// 	// Perform the update operation
+		// 	key := map[string]types.AttributeValue{
+		// 		"objectId": &types.AttributeValueMemberS{Value: objectId},
+		// 	}
+		// 	err = updateItem(svc, db.TableName, key, updateExpression, expressionAttributeValues)
+		// 	if err != nil {
+		// 		c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error updating item: %v", err))
+		// 		return
+		// 	}
+		// }
+
+		// c.Status(http.StatusOK)
 	}
 }
+
+func getCurrentResourceETag(svc *dynamodb.Client, tableName, objectId string) (string, error) {
+	// Construct the key to fetch the item from DynamoDB
+	// key := map[string]types.AttributeValue{
+	// 	"objectId": &types.AttributeValueMemberS{Value: objectId},
+	// }
+
+	// // Fetch the item from DynamoDB
+	// output, err := svc.GetItem(context.TODO(), &dynamodb.GetItemInput{
+	// 	TableName: aws.String(tableName),
+	// 	Key:       key,
+	// })
+	// if err != nil {
+	// 	return "", fmt.Errorf("failed to get item from DynamoDB: %w", err)
+	// }
+
+	// if output.Item == nil {
+	// 	return "", fmt.Errorf("no item found with objectId: %s", objectId)
+	// }
+
+	// // Marshal the item to JSON
+	// itemMap := make(map[string]interface{})
+	// if err := attributevalue.UnmarshalMap(output.Item, &itemMap); err != nil {
+	// 	return "", fmt.Errorf("failed to unmarshal DynamoDB item to map: %w", err)
+	// }
+
+	// itemJSON, err := json.Marshal(itemMap)
+	// if err != nil {
+	// 	return "", fmt.Errorf("failed to marshal item to JSON: %w", err)
+	// }
+
+	// // Compute the ETag for the marshaled JSON
+	// eTag := fmt.Sprintf(`"%x"`, sha256.Sum256(itemJSON))
+
+	// return eTag, nil
+	plan, err := fetchPlanItem(svc, db.TableName, objectId)
+	if err != nil {
+		return "", fmt.Errorf("error in fetching plan item: %w", err)
+	}
+
+	// Marshal the plan into JSON
+	planJSON, err := json.Marshal(plan)
+	if err != nil {
+		log.Println("Error marshalling plan to JSON:", err)
+		// c.AbortWithError(http.StatusInternalServerError, err)
+		return "", fmt.Errorf("failed to marshal item to JSON: %w", err)
+	}
+
+	log.Printf("Plan after unmarshalling JSON: %s\n", string(planJSON))
+
+	eTag := fmt.Sprintf(`"%x"`, sha256.Sum256(planJSON))
+	fmt.Println("ETAG in getCurrentResourceETag: ", eTag)
+
+	return eTag, nil
+}
+
+// func UpdateItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
+// 	return func(c *gin.Context) {
+// 		objectId := c.Param("objectId")
+// 		if objectId == "" {
+// 			c.AbortWithError(http.StatusBadRequest, errors.New("ObjectId must be provided"))
+// 			return
+// 		}
+
+// 		bodyBytes, err := ioutil.ReadAll(c.Request.Body)
+// 		if err != nil {
+// 			c.AbortWithError(http.StatusInternalServerError, errors.New("error reading request body"))
+// 			return
+// 		}
+
+// 		// Assuming the incoming JSON represents the entire structure to be stored as flat JSON.
+// 		var updates map[string]interface{}
+// 		if err := json.Unmarshal(bodyBytes, &updates); err != nil {
+// 			c.AbortWithError(http.StatusBadRequest, errors.New("error unmarshalling the json request"))
+// 			return
+// 		}
+
+// 		// Fetch the current state of the item to compare with the incoming updates.
+// 		currentItem, err := fetchPlanItem(svc, db.TableName, objectId)
+// 		if err != nil {
+// 			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error fetching current item: %v", err))
+// 			return
+// 		}
+
+// 		// Assuming `fetchPlanItem` returns the item as a map[string]interface{} for easy comparison.
+// 		// You would then compare `currentItem` with `updates` to determine what needs to be changed.
+// 		// This step is simplified here; actual implementation would depend on your specific requirements.
+
+// 		// Prepare the update payload. This might involve merging `currentItem` and `updates`,
+// 		// handling deletions, additions, and modifications as needed.
+// 		updatedItem, err := prepareUpdatePayload(currentItem, updates)
+// 		if err != nil {
+// 			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error preparing update payload: %v", err))
+// 			return
+// 		}
+
+// 		// Convert the updated structure back to a flat JSON for storage.
+// 		av, err := attributevalue.MarshalMap(updatedItem)
+// 		if err != nil {
+// 			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error marshalling updates: %v", err))
+// 			return
+// 		}
+
+// 		av["objectId"] = &types.AttributeValueMemberS{Value: objectId}
+
+// 		// // Update the item in DynamoDB.
+// 		// key := map[string]types.AttributeValue{
+// 		//     "objectId": &types.AttributeValueMemberS{Value: objectId},
+// 		// }
+
+// 		input := &dynamodb.PutItemInput{
+// 			Item:      av,
+// 			TableName: aws.String(db.TableName),
+// 		}
+
+// 		_, err = svc.PutItem(context.TODO(), input)
+// 		if err != nil {
+// 			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error updating item: %v", err))
+// 			return
+// 		}
+
+// 		c.Status(http.StatusOK)
+// 	}
+// }
+
+// // prepareUpdatePayload merges updates into the currentItem and returns the merged item.
+// // It handles any special cases as needed and applies updates to currentItem.
+// func prepareUpdatePayload(currentItem *models.Plan, updates map[string]interface{}) (*models.Plan, error) {
+// 	// Convert currentItem to a map for easier manipulation
+// 	currentItemMap := make(map[string]interface{})
+// 	currentItemBytes, err := json.Marshal(currentItem)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	err = json.Unmarshal(currentItemBytes, &currentItemMap)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+
+// 	// Iterate over the updates map and apply changes to currentItemMap
+// 	for key, updateValue := range updates {
+// 		currentItemMap[key] = updateValue
+// 	}
+
+// 	// Convert the updated map back to a models.Plan
+// 	updatedItemBytes, err := json.Marshal(currentItemMap)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	err = json.Unmarshal(updatedItemBytes, currentItem)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+
+// 	return currentItem, nil
+// }
 
 func DeleteItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -987,6 +1209,14 @@ func PatchItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 		fmt.Println("object id", item.ObjectId)
 		fmt.Println("passed object id", objectId)
 
+		canonicalBytes, err := json.Marshal(item)
+		if err != nil {
+			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error marshalling item to JSON: %v", err))
+			return
+		}
+
+		requestETag := fmt.Sprintf(`"%x"`, sha256.Sum256(canonicalBytes))
+
 		// // If the item has a new objectId, create it as a new independent entry
 		// if item.ObjectId != "" && item.ObjectId != objectId {
 		// 	newItem := item                  // Assuming you want to create a new item based on the modified item
@@ -1238,6 +1468,7 @@ func PatchItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 
 		}
 
+		c.Header("ETag", requestETag)
 		c.Status(http.StatusOK)
 	}
 }
