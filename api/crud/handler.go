@@ -529,6 +529,19 @@ func createItem(svc *dynamodb.Client, tableName string, av map[string]types.Attr
 		return fmt.Errorf("item with objectId %s already exists", av["objectId"].(*types.AttributeValueMemberS).Value)
 	}
 
+	// var ErrItemNotFound = errors.New("item not found")
+
+	// if err != nil {
+	// 	// Assuming getItem returns a specific error for item not found
+	// 	if !errors.Is(err, ErrItemNotFound) {
+	// 		return fmt.Errorf("error checking for existing item: %v", err)
+	// 	}
+	// 	// Item not found, proceed with creation
+	// } else {
+	// 	// Item exists, handle accordingly
+	// 	return fmt.Errorf("item with objectId %s already exists", av["objectId"].(*types.AttributeValueMemberS).Value)
+	// }
+
 	input := &dynamodb.PutItemInput{
 		Item:      av,
 		TableName: aws.String(tableName),
@@ -662,17 +675,17 @@ func FlattenPlan(plan models.Plan) (map[string]json.RawMessage, error) {
 
 func PatchItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// objectId := c.Param("objectId")
-		// if objectId == "" {
-		// 	c.AbortWithError(http.StatusBadRequest, errors.New("ObjectId must be provided"))
-		// 	return
-		// }
-
-		objectId := TOP_LEVEL_OBJECTID
+		objectId := c.Param("objectId")
 		if objectId == "" {
 			c.AbortWithError(http.StatusBadRequest, errors.New("ObjectId must be provided"))
 			return
 		}
+
+		// objectId := TOP_LEVEL_OBJECTID
+		// if objectId == "" {
+		// 	c.AbortWithError(http.StatusBadRequest, errors.New("ObjectId must be provided"))
+		// 	return
+		// }
 
 		key := map[string]types.AttributeValue{
 			"objectId": &types.AttributeValueMemberS{Value: objectId},
@@ -715,24 +728,45 @@ func PatchItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 			return
 		}
 
-		// Check if objectId is being updated
-		if item.ObjectId != "" && item.ObjectId != objectId {
-			// Create a new item with the new objectId
-			// Note: You might need to adjust this to ensure all necessary data is included
-			if err := createNewItemWithNewObjectId(svc, item); err != nil {
-				c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error creating item with new objectId: %v", err))
-				return
-			}
+		fmt.Println("object id", item.ObjectId)
+		fmt.Println("passed object id", objectId)
 
-			// Delete the old item
-			if err := deleteItem(svc, db.TableName, map[string]types.AttributeValue{"objectId": &types.AttributeValueMemberS{Value: objectId}}); err != nil {
-				c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error deleting old item: %v", err))
-				return
-			}
+		// // If the item has a new objectId, create it as a new independent entry
+		// if item.ObjectId != "" && item.ObjectId != objectId {
+		// 	newItem := item                  // Assuming you want to create a new item based on the modified item
+		// 	newItem.ObjectId = item.ObjectId // Explicitly set the new object ID, if not already set
+		// 	fmt.Println("new object id", newItem.ObjectId)
 
-			c.Status(http.StatusOK)
-			return
-		}
+		// 	err := createNewItemWithNewObjectId(svc, item)
+		// 	if err != nil {
+		// 		c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error creating item with new objectId: %v", err))
+		// 		return
+		// 	}
+		// 	// c.Status(http.StatusOK) // Consider returning the newly created item or its ID
+		// 	// return
+		// }
+
+		// // Check if objectId is being updated
+		// if item.ObjectId != "" {
+		// 	newItem := item                  // Assuming you want to create a new item based on the modified item
+		// 	newItem.ObjectId = item.ObjectId // Explicitly set the new object ID, if not already set
+		// 	fmt.Println("new object id", newItem.ObjectId)
+		// 	// Create a new item with the new objectId
+		// 	// Note: You might need to adjust this to ensure all necessary data is included
+		// 	if err := createNewItemWithNewObjectId(svc, newItem); err != nil {
+		// 		c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error creating item with new objectId: %v", err))
+		// 		return
+		// 	}
+
+		// 	// Delete the old item
+		// 	if err := deleteItem(svc, db.TableName, map[string]types.AttributeValue{"objectId": &types.AttributeValueMemberS{Value: objectId}}); err != nil {
+		// 		c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error deleting old item: %v", err))
+		// 		return
+		// 	}
+
+		// 	c.Status(http.StatusOK)
+		// 	return
+		// }
 
 		// Fetch the current plan item from the database
 		currentPlan, err := fetchPlanItem(svc, db.TableName, TOP_LEVEL_OBJECTID)
@@ -742,34 +776,153 @@ func PatchItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 			return
 		}
 
+		// Assuming fetchPlanItem returns a pointer to a Plan and an error
+		// Compare the current item with the PATCH data
+		// This example focuses on the LinkedPlanServices array
+		for _, newService := range item.LinkedPlanServices {
+			isNew := true
+			for _, currentService := range currentItem.LinkedPlanServices {
+				if newService.ObjectId == currentService.ObjectId {
+					// This is an existing service, not a new one
+					isNew = false
+					break
+				}
+			}
+			if isNew {
+				// This is a new service, so do something with its ID
+				fmt.Println("New service ID:", newService.ObjectId)
+				// For example, add the new service to the database
+				// err := createLinkedPlanService(svc, item.ObjectId, newService)
+				// if err != nil {
+				// 	c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error creating new linked plan service: %v", err))
+				// 	return
+				// }
+				////////////////////////////////
+				// Use the custom marshaling function instead of attributevalue.MarshalMap
+				av, err := marshalMapUsingJSONTags(newService.LinkedService)
+				if err != nil {
+					c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error marshalling linkedService: %v", err))
+					return
+				}
+				// Since marshalMapUsingJSONTags returns a map[string]interface{}, you need to convert it to map[string]types.AttributeValue
+				avAttributeValue, err := attributevalue.MarshalMap(av)
+				if err != nil {
+					c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error converting to AttributeValue map: %v", err))
+					return
+				}
+				avAttributeValue["objectId"] = &types.AttributeValueMemberS{Value: newService.LinkedService.ObjectId}
+
+				if err := createItem(svc, db.TableName, avAttributeValue); err != nil {
+					c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error creating linkedService: %v", err))
+					return
+				}
+
+				////
+				av, err = marshalMapUsingJSONTags(newService.PlanServiceCostShares)
+				if err != nil {
+					c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error marshalling PlanServiceCostShares: %v", err))
+					return
+				}
+				// Since marshalMapUsingJSONTags returns a map[string]interface{}, you need to convert it to map[string]types.AttributeValue
+				avAttributeValue, err = attributevalue.MarshalMap(av)
+				if err != nil {
+					c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error converting to AttributeValue map: %v", err))
+					return
+				}
+				avAttributeValue["objectId"] = &types.AttributeValueMemberS{Value: newService.PlanServiceCostShares.ObjectId}
+
+				if err := createItem(svc, db.TableName, avAttributeValue); err != nil {
+					c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error creating PlanServiceCostShares: %v", err))
+					return
+				}
+
+				//////
+				av, err = marshalMapUsingJSONTags(newService)
+				if err != nil {
+					c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error marshalling newService: %v", err))
+					return
+				}
+				// Since marshalMapUsingJSONTags returns a map[string]interface{}, you need to convert it to map[string]types.AttributeValue
+				avAttributeValue, err = attributevalue.MarshalMap(av)
+				if err != nil {
+					c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error converting to AttributeValue map: %v", err))
+					return
+				}
+				avAttributeValue["objectId"] = &types.AttributeValueMemberS{Value: newService.ObjectId}
+
+				if err := createItem(svc, db.TableName, avAttributeValue); err != nil {
+					c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error creating newService: %v", err))
+					return
+				}
+				/////////////////////////////////
+
+				// av, err := attributevalue.MarshalMap(newService.LinkedService)
+				// av["objectId"] = &types.AttributeValueMemberS{Value: newService.LinkedService.ObjectId}
+
+				// if err != nil {
+				// 	c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error marshalling linkedService: %v", err))
+				// 	return
+				// }
+				// if err := createItem(svc, db.TableName, av); err != nil {
+				// 	c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error creating linkedService: %v", err))
+				// 	return
+				// }
+
+				// av, err = attributevalue.MarshalMap(newService.PlanServiceCostShares)
+				// av["objectId"] = &types.AttributeValueMemberS{Value: newService.PlanServiceCostShares.ObjectId}
+
+				// if err != nil {
+				// 	c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error marshalling planserviceCostShares: %v", err))
+				// 	return
+				// }
+				// if err := createItem(svc, db.TableName, av); err != nil {
+				// 	c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error creating PlanServiceCostShares: %v", err))
+				// 	return
+				// }
+
+				// av, err = attributevalue.MarshalMap(newService)
+				// av["objectId"] = &types.AttributeValueMemberS{Value: newService.ObjectId}
+
+				// if err != nil {
+				// 	c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error marshalling planservice: %v", err))
+				// 	return
+				// }
+				// if err := createItem(svc, db.TableName, av); err != nil {
+				// 	c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error creating planservice: %v", err))
+				// 	return
+				// }
+			}
+		}
+
 		// Check if the patch is for linkedPlanServices
 		if len(item.LinkedPlanServices) > 0 {
 			// Add the new linkedPlanServices to the current plan's array
 			currentPlan.LinkedPlanServices = append(currentPlan.LinkedPlanServices, item.LinkedPlanServices...)
-		} else {
-			// Handle other updates normally
-			// This part of the code will handle updates to planCostShares and plan
-			// You can add logic here to replace the entire object with new data as per your requirement
-			if item.PlanCostShares != (models.CostShares{}) {
-				currentPlan.PlanCostShares = item.PlanCostShares
-			}
-			// Update top-level plan attributes if they are present in the request
-			if item.Org != "" {
-				currentPlan.Org = item.Org
-			}
-			if item.ObjectType != "" {
-				currentPlan.ObjectType = item.ObjectType
-			}
-			if item.PlanType != "" {
-				currentPlan.PlanType = item.PlanType
-			}
-			if item.CreationDate != "" {
-				currentPlan.CreationDate = item.CreationDate
-			}
-			// if item.ObjectId != "" {
-			// 	currentPlan.ObjectId = item.ObjectId
-			// }
 		}
+		// else {
+		// 	// Handle other updates normally
+		// 	// This part of the code will handle updates to planCostShares and plan
+		// 	// You can add logic here to replace the entire object with new data as per your requirement
+		// 	if item.PlanCostShares != (models.CostShares{}) {
+		// 		currentPlan.PlanCostShares = item.PlanCostShares
+		// 	}
+		// 	// Update top-level plan attributes if they are present in the request
+		// 	if item.Org != "" {
+		// 		currentPlan.Org = item.Org
+		// 	}
+		// 	if item.ObjectType != "" {
+		// 		currentPlan.ObjectType = item.ObjectType
+		// 	}
+		// 	if item.PlanType != "" {
+		// 		currentPlan.PlanType = item.PlanType
+		// 	}
+		// 	if item.CreationDate != "" {
+		// 		currentPlan.CreationDate = item.CreationDate
+		// 	}
+		// 	// if item.ObjectId != "" {
+		// 	// 	currentPlan.ObjectId = item.ObjectId
+		// 	// }
+		// }
 
 		flatMap, err := FlattenPlan(item)
 		if err != nil {
@@ -801,28 +954,6 @@ func PatchItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 			expressionAttributeNames := make(map[string]string) // Correctly initialize the map
 			expressionAttributeValues := map[string]types.AttributeValue{}
 			i := 0
-			// for k, v := range av {
-			// 	updateExpression += fmt.Sprintf(" %s = :val%d,", k, i)
-			// 	expressionAttributeValues[fmt.Sprintf(":val%d", i)] = v
-			// 	i++
-			// }
-
-			// for k, v := range av {
-			// 	if k == "objectId" {
-			// 		continue // Skip attempting to update objectId
-			// 	}
-			// 	updateExpression += fmt.Sprintf(" %s = :val%d,", k, i)
-			// 	expressionAttributeValues[fmt.Sprintf(":val%d", i)] = v
-			// 	i++
-			// }
-
-			// updateExpression = updateExpression[:len(updateExpression)-1] // Remove the last comma
-
-			// err = updateItem(svc, db.TableName, key, updateExpression, expressionAttributeValues)
-			// if err != nil {
-			// 	c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error updating item: %v", err))
-			// 	return
-			// }
 			for k, v := range av {
 				if k == "objectId" {
 					continue // Skip attempting to update objectId
@@ -834,9 +965,9 @@ func PatchItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 				updateExpression += fmt.Sprintf(" %s = %s,", expressionAttributeName, expressionAttributeValue)
 				expressionAttributeValues[expressionAttributeValue] = v
 				// Map the expression attribute name to the actual attribute name
-				if expressionAttributeNames == nil {
-					expressionAttributeNames = make(map[string]string)
-				}
+				// if expressionAttributeNames == nil {
+				// 	expressionAttributeNames = make(map[string]string)
+				// }
 				expressionAttributeNames[expressionAttributeName] = k
 				i++
 			}
@@ -862,6 +993,10 @@ func createNewItemWithNewObjectId(svc *dynamodb.Client, item models.Plan) error 
 		return err
 	}
 
+	// Ensure the objectId is correctly set in the attribute values map
+	// This step might be redundant if MarshalMap already includes the objectId, but it's a good check
+	av["objectId"] = &types.AttributeValueMemberS{Value: item.ObjectId}
+
 	// Create the new item in DynamoDB
 	input := &dynamodb.PutItemInput{
 		Item:      av,
@@ -869,5 +1004,58 @@ func createNewItemWithNewObjectId(svc *dynamodb.Client, item models.Plan) error 
 	}
 
 	_, err = svc.PutItem(context.TODO(), input)
-	return err
+	if err != nil {
+		return fmt.Errorf("failed to create new item with objectId %s: %v", item.ObjectId, err)
+	}
+
+	return nil
+}
+
+func createLinkedPlanService(svc *dynamodb.Client, planObjectId string, service models.PlanService) error {
+	// Directly set the ObjectId from the service if it's not already a string
+	objectId := service.ObjectId // Assuming ObjectId is a *string, dereference it
+
+	// Manually construct the attribute value map for complex types
+	av := map[string]types.AttributeValue{
+		"objectId": &types.AttributeValueMemberS{Value: objectId},
+		// For other fields, ensure they are correctly set.
+		// This is a simplified example; you'll need to adjust it based on your actual struct fields
+	}
+
+	// Debugging: Log the attribute values map to verify all required keys and values are present
+	log.Printf("Attempting to insert item with attributes: %+v\n", av)
+
+	// Create the new item in DynamoDB
+	input := &dynamodb.PutItemInput{
+		Item:      av,
+		TableName: aws.String(db.TableName),
+	}
+
+	_, err := svc.PutItem(context.TODO(), input)
+	if err != nil {
+		return fmt.Errorf("failed to create new linkedPlanService with objectId %s: %v", objectId, err)
+	}
+
+	return nil
+}
+
+func marshalMapUsingJSONTags(v interface{}) (map[string]interface{}, error) {
+	val := reflect.ValueOf(v)
+	if val.Kind() == reflect.Ptr {
+		val = val.Elem()
+	}
+	typ := val.Type()
+
+	result := make(map[string]interface{})
+	for i := 0; i < val.NumField(); i++ {
+		field := typ.Field(i)
+		jsonTag := field.Tag.Get("json")
+		if jsonTag == "" {
+			continue
+		}
+		key := strings.Split(jsonTag, ",")[0] // Ignore omitempty and other options
+		value := val.Field(i).Interface()
+		result[key] = value
+	}
+	return result, nil
 }
