@@ -35,12 +35,6 @@ type Service struct {
 	Name       string `json:"name" validate:"required"`
 }
 
-// type LinkedPlanService struct {
-// 	ObjectId     string // Add other fields as necessary
-// 	PlanObjectId string
-// 	// Add other fields as necessary
-// }
-
 // func ValidateStruct(s interface{}) error {
 // 	return validate.Struct(s)
 // }
