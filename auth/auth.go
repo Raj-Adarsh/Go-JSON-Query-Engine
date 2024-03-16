@@ -21,7 +21,6 @@ func AuthMiddleware(oauthConfig *oauth2.Config) gin.HandlerFunc {
 			return
 		}
 
-		// Typically, the Authorization header is in the format `Bearer <token>`
 		var token string
 		_, err := fmt.Sscanf(authHeader, "Bearer %s", &token)
 		if err != nil {
@@ -50,7 +49,6 @@ func validateIDToken(idToken, clientID string) bool {
 		return false
 	}
 
-	// Optionally, you can inspect the payload of the token
 	fmt.Printf("Token validated for audience: %v\n", payload.Audience)
 
 	return true
