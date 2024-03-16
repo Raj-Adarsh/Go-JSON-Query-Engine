@@ -117,38 +117,40 @@ func GetItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 			return
 		}
 		objectId := TOP_LEVEL_OBJECTID
-		plan, err := fetchPlanItem(svc, db.TableName, objectId)
+		key := map[string]types.AttributeValue{
+			"objectId": &types.AttributeValueMemberS{Value: objectId},
+		}
+
+		currentItem, _, err := getItem(svc, db.TableName, key)
 		if err != nil {
-			if err.Error() == "item not found" {
-				c.AbortWithStatus(http.StatusNotFound)
-				return
-			}
-			c.AbortWithError(http.StatusInternalServerError, err)
+			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error fetching current item: %v", err))
 			return
 		}
 
-		// Marshal the plan into JSON
-		planJSON, err := json.Marshal(plan)
+		// Generate ETag for the current item
+		currentItemJSON, err := json.Marshal(currentItem)
 		if err != nil {
-			log.Println("Error marshalling plan to JSON:", err)
-			c.AbortWithError(http.StatusInternalServerError, err)
+			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error marshalling current item to JSON: %v", err))
 			return
 		}
 
-		log.Printf("Plan after unmarshalling JSON: %s\n", string(planJSON))
+		fmt.Println("Current item in get json", string(currentItemJSON))
 
-		eTag := fmt.Sprintf(`"%x"`, sha256.Sum256(planJSON))
-		fmt.Println("ETAG in GET: ", eTag)
+		ifMatchETag := c.GetHeader("If-None-Match")
+		fmt.Println("Etag recieved in GETALL req:", ifMatchETag)
 
-		ifMatch := c.GetHeader("If-None-Match")
-		fmt.Println("ifMatch: ", ifMatch)
-		if ifMatch == eTag {
+		currentETag := fmt.Sprintf(`"%x"`, sha256.Sum256(currentItemJSON))
+
+		fmt.Println("Current ETag in GETALL-computed", currentETag)
+		// fmt.Println("Current ETag in Getall-computed", currentETag_func)
+		// Compare the ETag from If-Match header with the current item's ETag
+		if ifMatchETag == currentETag {
 			c.Status(http.StatusNotModified)
 			return
 		}
 
 		// Write the JSON response
-		c.Data(http.StatusOK, "application/json", planJSON)
+		c.Data(http.StatusOK, "application/json", currentItemJSON)
 	}
 }
 
@@ -615,6 +617,7 @@ func PatchItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 		// Read the If-Match header to get the ETag sent by the client
 		ifMatchETag := c.GetHeader("If-Match")
 		fmt.Println("Etag recieved in PATCH:", ifMatchETag)
+
 		currentItem, _, err := getItem(svc, db.TableName, key)
 		if err != nil {
 			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error fetching current item: %v", err))
@@ -627,8 +630,10 @@ func PatchItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error marshalling current item to JSON: %v", err))
 			return
 		}
+
+		fmt.Println("Current item in patch json", string(currentItemJSON))
 		currentETag := fmt.Sprintf(`"%x"`, sha256.Sum256(currentItemJSON))
-		fmt.Println("Current ETag in Patch-computed", currentETag)
+		fmt.Println("Current ETag in Patch-computed 1", currentETag)
 		// Compare the ETag from If-Match header with the current item's ETag
 		if ifMatchETag != currentETag {
 			c.AbortWithStatus(http.StatusPreconditionFailed)
@@ -649,14 +654,6 @@ func PatchItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 
 		fmt.Println("object id", item.ObjectId)
 		fmt.Println("passed object id", objectId)
-
-		canonicalBytes, err := json.Marshal(item)
-		if err != nil {
-			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error marshalling item to JSON: %v", err))
-			return
-		}
-
-		requestETag := fmt.Sprintf(`"%x"`, sha256.Sum256(canonicalBytes))
 
 		// Fetch the current plan item from the database
 		currentPlan, err := fetchPlanItem(svc, db.TableName, TOP_LEVEL_OBJECTID)
@@ -793,7 +790,24 @@ func PatchItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 
 		}
 
-		c.Header("ETag", requestETag)
+		updatedItem, _, err := getItem(svc, db.TableName, map[string]types.AttributeValue{
+			"objectId": &types.AttributeValueMemberS{Value: objectId},
+		})
+		if err != nil {
+			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error fetching updated item: %v", err))
+			return
+		}
+
+		// Generate ETag for the updated item
+		updatedItemJSON, err := json.Marshal(updatedItem)
+		if err != nil {
+			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error marshalling updated item to JSON: %v", err))
+			return
+		}
+
+		updatedETag := fmt.Sprintf(`"%x"`, sha256.Sum256(updatedItemJSON))
+		fmt.Println("Updated ETag in Patch-computed 2", updatedETag)
+		c.Header("ETag", updatedETag)
 		c.Status(http.StatusOK)
 	}
 }
@@ -812,7 +826,7 @@ func marshalMapUsingJSONTags(v interface{}) (map[string]interface{}, error) {
 		if jsonTag == "" {
 			continue
 		}
-		key := strings.Split(jsonTag, ",")[0] // Ignore omitempty and other options
+		key := strings.Split(jsonTag, ",")[0]
 		value := val.Field(i).Interface()
 		result[key] = value
 	}
