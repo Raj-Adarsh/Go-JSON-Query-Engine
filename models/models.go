@@ -1,6 +1,8 @@
 package models
 
-// var validate = validator.New()
+import "github.com/go-playground/validator"
+
+var validate = validator.New()
 
 type Plan struct {
 	PlanCostShares     CostShares    `json:"planCostShares" validate:"required"`
@@ -35,6 +37,6 @@ type Service struct {
 	Name       string `json:"name" validate:"required"`
 }
 
-// func ValidateStruct(s interface{}) error {
-// 	return validate.Struct(s)
-// }
+func ValidateStruct(s interface{}) error {
+	return validate.Struct(s)
+}

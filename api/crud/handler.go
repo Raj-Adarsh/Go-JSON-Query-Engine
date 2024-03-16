@@ -23,6 +23,35 @@ import (
 	"crud_with_dynamodb/models"
 )
 
+func validatePlan(plan models.Plan) error {
+	// Validate PlanCostShares
+	if plan.PlanCostShares.Org == "" || plan.PlanCostShares.ObjectId == "" || plan.PlanCostShares.ObjectType == "" {
+		return errors.New("missing required fields in PlanCostShares")
+	}
+
+	// Validate each LinkedPlanService
+	if len(plan.LinkedPlanServices) == 0 {
+		return errors.New("linkedPlanServices is required")
+	}
+
+	for _, service := range plan.LinkedPlanServices {
+		if service.Org == "" || service.ObjectId == "" || service.ObjectType == "" ||
+			service.LinkedService.Org == "" || service.LinkedService.ObjectId == "" ||
+			service.LinkedService.ObjectType == "" || service.LinkedService.Name == "" ||
+			service.PlanServiceCostShares.Org == "" || service.PlanServiceCostShares.ObjectId == "" ||
+			service.PlanServiceCostShares.ObjectType == "" {
+			return errors.New("missing required fields in LinkedPlanServices")
+		}
+	}
+
+	// Validate top-level Plan fields
+	if plan.Org == "" || plan.ObjectId == "" || plan.ObjectType == "" || plan.PlanType == "" {
+		return errors.New("missing required top-level Plan fields")
+	}
+
+	return nil
+}
+
 const TOP_LEVEL_OBJECTID = "12xvxc345ssdsds-508"
 
 func CreateItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
@@ -56,6 +85,22 @@ func CreateItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 		var item models.Plan
 		if err := json.Unmarshal(bodyBytes, &item); err != nil {
 			c.AbortWithError(http.StatusBadRequest, errors.New("error unmarshalling the json request"))
+			return
+		}
+
+		err = models.ValidateStruct(item)
+		if err != nil {
+			fmt.Println(err)
+			c.AbortWithError(http.StatusBadRequest, fmt.Errorf("bad request: %v", err))
+			return
+		}
+
+		if item.PlanCostShares.Copay == nil || item.PlanCostShares.Deductible == nil {
+			c.AbortWithError(http.StatusBadRequest, fmt.Errorf("bad request: %v", err))
+		}
+
+		if err := validatePlan(item); err != nil {
+			c.AbortWithError(http.StatusBadRequest, fmt.Errorf("bad request: %v", err))
 			return
 		}
 
@@ -261,6 +306,22 @@ func UpdateItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 		var item models.Plan
 		if err := json.Unmarshal(bodyBytes, &item); err != nil {
 			c.AbortWithError(http.StatusBadRequest, errors.New("error unmarshalling the json request"))
+			return
+		}
+
+		err = models.ValidateStruct(item)
+		if err != nil {
+			fmt.Println(err)
+			c.AbortWithError(http.StatusBadRequest, fmt.Errorf("bad request: %v", err))
+			return
+		}
+
+		if item.PlanCostShares.Copay == nil || item.PlanCostShares.Deductible == nil {
+			c.AbortWithError(http.StatusBadRequest, fmt.Errorf("bad request: %v", err))
+		}
+
+		if err := validatePlan(item); err != nil {
+			c.AbortWithError(http.StatusBadRequest, fmt.Errorf("bad request: %v", err))
 			return
 		}
 
@@ -649,6 +710,22 @@ func PatchItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 		var item models.Plan
 		if err := json.Unmarshal(bodyBytes, &item); err != nil {
 			c.AbortWithError(http.StatusBadRequest, errors.New("error unmarshalling the json request"))
+			return
+		}
+
+		err = models.ValidateStruct(item)
+		if err != nil {
+			fmt.Println(err)
+			c.AbortWithError(http.StatusBadRequest, fmt.Errorf("bad request: %v", err))
+			return
+		}
+
+		if item.PlanCostShares.Copay == nil || item.PlanCostShares.Deductible == nil {
+			c.AbortWithError(http.StatusBadRequest, fmt.Errorf("bad request: %v", err))
+		}
+
+		if err := validatePlan(item); err != nil {
+			c.AbortWithError(http.StatusBadRequest, fmt.Errorf("bad request: %v", err))
 			return
 		}
 
