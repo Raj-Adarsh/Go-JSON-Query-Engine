@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crud_with_dynamodb/queue"
 	"crud_with_dynamodb/router"
 	"os"
 
@@ -12,6 +13,9 @@ var googleOauthConfig = &oauth2.Config{
 }
 
 func main() {
+	go queue.ConnectSQS()
+	go queue.PollMessagesAndInsertToElasticsearch()
+	// go queue.InsertSimpleStringToElasticsearch()
 	r := router.InitRouter(googleOauthConfig)
 	r.Run(":8081")
 }
