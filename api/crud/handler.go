@@ -21,6 +21,7 @@ import (
 
 	"crud_with_dynamodb/db"
 	"crud_with_dynamodb/models"
+	"crud_with_dynamodb/queue"
 )
 
 func validatePlan(plan models.Plan) error {
@@ -149,7 +150,10 @@ func CreateItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 				c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error storing item with objectId %s: %v", objectId, err))
 				return
 			}
+
 		}
+
+		queue.PublishPlanCreation(item)
 
 		c.Status(http.StatusCreated)
 	}
@@ -168,7 +172,7 @@ func GetItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 
 		currentItem, _, err := getItem(svc, db.TableName, key)
 		if err != nil {
-			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error fetching current item: %v", err))
+			c.AbortWithError(http.StatusNoContent, fmt.Errorf("error fetching current item: %v", err))
 			return
 		}
 
@@ -253,7 +257,7 @@ func GetItemByObjectIDHandler(svc *dynamodb.Client) gin.HandlerFunc {
 
 		// Check if any items matched the filter
 		if len(result.Items) == 0 {
-			c.AbortWithStatus(http.StatusNotFound)
+			c.AbortWithStatus(http.StatusNoContent)
 			return
 		}
 
