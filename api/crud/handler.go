@@ -153,7 +153,7 @@ func CreateItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 
 		}
 
-		queue.PublishPlanCreation(item)
+		queue.PublishPlanCreation(item, "create")
 
 		c.Status(http.StatusCreated)
 	}
@@ -889,6 +889,7 @@ func PatchItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 		updatedETag := fmt.Sprintf(`"%x"`, sha256.Sum256(updatedItemJSON))
 		fmt.Println("Updated ETag in Patch-computed 2", updatedETag)
 		c.Header("ETag", updatedETag)
+		queue.PublishPlanCreation(item, "update")
 		c.Status(http.StatusOK)
 	}
 }

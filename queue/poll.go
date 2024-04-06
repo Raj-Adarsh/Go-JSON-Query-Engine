@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"crud_with_dynamodb/models"
+	"io/ioutil"
+	"strings"
+
+	// "crud_with_dynamodb/queue"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"time"
 
@@ -26,6 +29,11 @@ import (
 type SimpleDoc struct {
 	Status string `json:"status"`
 }
+
+// type Message struct {
+// 	Operation string      `json:"operation"`
+// 	Data      models.Plan `json:"data"`
+// }
 
 // Initialize the Elasticsearch client
 func getElasticsearchClient() (*elasticsearch.Client, error) {
@@ -206,21 +214,89 @@ func processAndInsertMessage(esClient *elasticsearch.Client, message types.Messa
 	// }
 
 	// var buf bytes.Buffer
-	var plan models.Plan
-	if err := json.Unmarshal([]byte(*message.Body), &plan); err != nil {
+
+	var msgBody Message
+	if err := json.Unmarshal([]byte(*message.Body), &msgBody); err != nil {
 		return fmt.Errorf("error unmarshalling message body: %w", err)
+	}
+
+	fmt.Printf("Operation: %s\n", msgBody.Operation)
+
+	var plan models.Plan
+	if err := json.Unmarshal(msgBody.Data, &plan); err != nil {
+		return fmt.Errorf("error unmarshalling plan data: %w", err)
+	}
+
+	// plan, ok := msgBody.Data.(models.Plan)
+	// if !ok {
+	// 	log.Fatalf("Data is not of type models.Plan")
+	// }
+
+	log.Println("Object ID", plan.ObjectId)
+
+	// Now you can access the name and operation fields
+	// fmt.Printf("Processing message: Name=%s, Operation=\n", msgBody.Operation, msgBody.Data)
+
+	// Based on the operation, decide whether to insert or update the document in Elasticsearch
+	if msgBody.Operation == "create" {
+		// Insert document logic here
+		req := esapi.IndexRequest{
+			Index:      "plans",
+			DocumentID: plan.ObjectId, // Ensure this is set correctly for updates
+			// Body:       bytes.NewReader([]byte(*message.Body)),
+			Body:    bytes.NewReader(msgBody.Data),
+			Refresh: "true",
+		}
+
+		res, err := req.Do(context.Background(), esClient)
+		if err != nil {
+			log.Printf("Error performing indexing operation: %v", err)
+			return fmt.Errorf("error indexing document: %w", err)
+		}
+		defer res.Body.Close()
+
+		// Log the response status and body for debugging
+		log.Printf("Document indexed successfully, response status: %s", res.Status())
+	} else if msgBody.Operation == "update" {
+		// Update document logic here
+		docData := msgBody.Data
+
+		req := esapi.UpdateRequest{
+			Index:      "plans",
+			DocumentID: plan.ObjectId,
+			Body:       strings.NewReader(`{"doc":` + string(docData) + `}`),
+			Refresh:    "true", // Ensure changes are immediately visible
+		}
+
+		res, err := req.Do(context.Background(), esClient)
+		if err != nil {
+			log.Printf("Error performing indexing operation for update : %v", err)
+			return fmt.Errorf("error indexing document for update : %w", err)
+		}
+		defer res.Body.Close()
+
+		// Log the response status and body for debugging
+		// log.Printf("Document indexed successfully for update , response status: %s", res.Status())
+		// Check the response body for more details on the error
+		if res.IsError() {
+			responseBody, _ := ioutil.ReadAll(res.Body)
+			log.Printf("Error response from Elasticsearch: %s", responseBody)
+			return fmt.Errorf("Elasticsearch responded with error: %s", res.Status())
+		}
+
+		log.Printf("Document indexed successfully, response status: %s", res.Status())
 	}
 
 	// if err := json.NewEncoder(&buf).Encode(*message.Body); err != nil {
 	// 	return fmt.Errorf("error encoding message body: %w", err)
 	// }
 
-	req := esapi.IndexRequest{
-		Index:      "plans",
-		DocumentID: plan.ObjectId,
-		Body:       bytes.NewReader([]byte(*message.Body)),
-		Refresh:    "true",
-	}
+	// req := esapi.IndexRequest{
+	// 	Index:      "plans",
+	// 	DocumentID: plan.ObjectId,
+	// 	Body:       bytes.NewReader([]byte(*message.Body)),
+	// 	Refresh:    "true",
+	// }
 
 	// // Create a simplified IndexRequest
 	// req := esapi.IndexRequest{
@@ -230,17 +306,17 @@ func processAndInsertMessage(esClient *elasticsearch.Client, message types.Messa
 	// 	Refresh:    "true",
 	// }
 
-	// Perform the indexing operation with detailed logging
-	res, err := req.Do(context.Background(), esClient)
-	if err != nil {
-		log.Printf("Error performing indexing operation: %v", err)
-		return fmt.Errorf("error indexing document: %w", err)
-	}
-	defer res.Body.Close()
+	// // Perform the indexing operation with detailed logging
+	// res, err := req.Do(context.Background(), esClient)
+	// if err != nil {
+	// 	log.Printf("Error performing indexing operation: %v", err)
+	// 	return fmt.Errorf("error indexing document: %w", err)
+	// }
+	// defer res.Body.Close()
 
-	// Log the response status and body for debugging
-	responseBody, _ := ioutil.ReadAll(res.Body)
-	log.Printf("Indexing operation response status: %s, body: %s", res.Status(), responseBody)
+	// // Log the response status and body for debugging
+	// responseBody, _ := ioutil.ReadAll(res.Body)
+	// log.Printf("Indexing operation response status: %s, body: %s", res.Status(), responseBody)
 
 	return nil
 }
