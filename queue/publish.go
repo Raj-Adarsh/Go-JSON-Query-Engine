@@ -14,9 +14,15 @@ import (
 	"crud_with_dynamodb/models"
 )
 
+// type Message struct {
+// 	Operation string      `json:"operation"`
+// 	Data      models.Plan `json:"data"`
+// }
+
 type Message struct {
-	Operation string      `json:"operation"`
-	Data      models.Plan `json:"data"`
+	Operation string `json:"operation"`
+	// Data      interface{} `json:"data"`
+	Data json.RawMessage `json:"data"`
 }
 
 // func sendMessage(sqsClient *sqs.Client, queueUrl string, messageBody Message) error {
@@ -111,7 +117,7 @@ func sendMessage(sqsClient *sqs.Client, queueUrl string, messageBody Message) er
 // 	}
 // }
 
-func PublishPlanCreation(plan models.Plan) {
+func PublishPlanCreation(plan models.Plan, operation string) {
 	// ElasticMQ endpoint and dummy credentials
 	endpoint := "http://localhost:9324"
 	region := "elasticmq"
@@ -138,9 +144,15 @@ func PublishPlanCreation(plan models.Plan) {
 	sqsClient := sqs.NewFromConfig(cfg)
 	queueUrl := "http://localhost:9324/000000000000/MyTestQueue-1"
 
+	// Marshal the plan object into JSON
+	planJSON, err := json.Marshal(plan)
+	if err != nil {
+		log.Fatalf("Failed to marshal plan: %v", err)
+	}
+
 	messageBody := Message{
-		Operation: "create",
-		Data:      plan,
+		Operation: operation,
+		Data:      planJSON,
 	}
 
 	// Send the message
