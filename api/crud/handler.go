@@ -203,45 +203,6 @@ func GetItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 	}
 }
 
-// func GetItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
-// 	return func(c *gin.Context) {
-// 		// Check if the request is for scanning the table
-// 		// if c.Request.URL.RawQuery == "scan=true" {
-// 		// Perform a scan operation on the DynamoDB table
-// 		input := &dynamodb.ScanInput{
-// 			TableName: aws.String(db.TableName),
-// 		}
-
-// 		result, err := svc.Scan(context.TODO(), input)
-// 		if err != nil {
-// 			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error scanning table: %v", err))
-// 			return
-// 		}
-
-// 		// Convert the result to JSON
-// 		var itemsJSON []map[string]interface{}
-// 		for _, item := range result.Items {
-// 			var itemMap map[string]interface{}
-// 			if err := attributevalue.UnmarshalMap(item, &itemMap); err != nil {
-// 				c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error converting item to JSON: %v", err))
-// 				return
-// 			}
-// 			itemsJSON = append(itemsJSON, itemMap)
-// 		}
-
-// 		itemsJSONBytes, err := json.Marshal(itemsJSON)
-// 		if err != nil {
-// 			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error converting result to JSON: %v", err))
-// 			return
-// 		}
-
-// 		c.Data(http.StatusOK, "application/json", itemsJSONBytes)
-
-// 		// Handle other cases or return an error for invalid requests
-// 		// c.Status(http.StatusBadRequest)
-// 	}
-// }
-
 func fetchPlanItem(svc *dynamodb.Client, tableName string, objectId string) (*models.Plan, error) {
 	key := map[string]types.AttributeValue{
 		"objectId": &types.AttributeValueMemberS{Value: objectId},
@@ -739,10 +700,10 @@ func PatchItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 		currentETag := fmt.Sprintf(`"%x"`, sha256.Sum256(currentItemJSON))
 		fmt.Println("Current ETag in Patch-computed 1", currentETag)
 		// Compare the ETag from If-Match header with the current item's ETag
-		// if ifMatchETag != currentETag {
-		// 	c.AbortWithStatus(http.StatusPreconditionFailed)
-		// 	return
-		// }
+		if ifMatchETag != currentETag {
+			c.AbortWithStatus(http.StatusPreconditionFailed)
+			return
+		}
 
 		bodyBytes, err := ioutil.ReadAll(c.Request.Body)
 		if err != nil {
@@ -783,89 +744,6 @@ func PatchItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 			return
 		}
 
-		// for _, newService := range item.LinkedPlanServices {
-		// 	// isNew := true
-		// 	// for _, currentService := range currentItem.LinkedPlanServices {
-		// 	// 	if newService.ObjectId == currentService.ObjectId {
-		// 	// 		// This is an existing service, not a new one
-		// 	// 		if err := updateItemInDynamoDB(svc, db.TableName, newService); err != nil {
-		// 	// 			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error updating item with objectId %s: %v", newService.ObjectId, err))
-		// 	// 			return
-		// 	// 		}
-		// 	// 		isNew = false
-		// 	// 		break
-		// 	// 	}
-		// 	// }
-		// 	exists, err := checkItemExists(svc, db.TableName, newService.ObjectId)
-		// 	if err != nil {
-		// 		c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error checking if item exists: %v", err))
-		// 		return
-		// 	}
-		// 	if exists {
-		// 		// Item exists, so update it
-		// 		fmt.Println("Item already exists, update it ..")
-		// 		if err := updateItemInDynamoDB(svc, db.TableName, newService); err != nil {
-		// 			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error updating item with objectId %s: %v", newService.ObjectId, err))
-		// 			return
-		// 		}
-		// 	} else {
-		// 		// This is a new service, so do something with its ID
-		// 		fmt.Println("New service ID:", newService.ObjectId)
-		// 		// Use the custom marshaling function instead of attributevalue.MarshalMap
-		// 		av, err := marshalMapUsingJSONTags(newService.LinkedService)
-		// 		if err != nil {
-		// 			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error marshalling linkedService: %v", err))
-		// 			return
-		// 		}
-
-		// 		avAttributeValue, err := attributevalue.MarshalMap(av)
-		// 		if err != nil {
-		// 			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error converting to AttributeValue map: %v", err))
-		// 			return
-		// 		}
-		// 		avAttributeValue["objectId"] = &types.AttributeValueMemberS{Value: newService.LinkedService.ObjectId}
-
-		// 		if err := createItem(svc, db.TableName, avAttributeValue); err != nil {
-		// 			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error creating linkedService: %v", err))
-		// 			return
-		// 		}
-
-		// 		av, err = marshalMapUsingJSONTags(newService.PlanServiceCostShares)
-		// 		if err != nil {
-		// 			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error marshalling PlanServiceCostShares: %v", err))
-		// 			return
-		// 		}
-
-		// 		avAttributeValue, err = attributevalue.MarshalMap(av)
-		// 		if err != nil {
-		// 			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error converting to AttributeValue map: %v", err))
-		// 			return
-		// 		}
-		// 		avAttributeValue["objectId"] = &types.AttributeValueMemberS{Value: newService.PlanServiceCostShares.ObjectId}
-
-		// 		if err := createItem(svc, db.TableName, avAttributeValue); err != nil {
-		// 			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error creating PlanServiceCostShares: %v", err))
-		// 			return
-		// 		}
-
-		// 		av, err = marshalMapUsingJSONTags(newService)
-		// 		if err != nil {
-		// 			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error marshalling newService: %v", err))
-		// 			return
-		// 		}
-		// 		avAttributeValue, err = attributevalue.MarshalMap(av)
-		// 		if err != nil {
-		// 			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error converting to AttributeValue map: %v", err))
-		// 			return
-		// 		}
-		// 		avAttributeValue["objectId"] = &types.AttributeValueMemberS{Value: newService.ObjectId}
-
-		// 		if err := createItem(svc, db.TableName, avAttributeValue); err != nil {
-		// 			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error creating newService: %v", err))
-		// 			return
-		// 		}
-		// 	}
-		// }
 		newServices := item.LinkedPlanServices
 		for _, newService := range newServices {
 			// Check if the service already exists in currentPlan
@@ -891,75 +769,8 @@ func PatchItemHandler(svc *dynamodb.Client) gin.HandlerFunc {
 			return
 		}
 
-		// // Check if the patch is for linkedPlanServices
-		// if len(item.LinkedPlanServices) > 0 {
-		// 	// Add the new linkedPlanServices to the current plan's array
-		// 	currentPlan.LinkedPlanServices = append(currentPlan.LinkedPlanServices, item.LinkedPlanServices...)
-		// }
-
-		// flatMap, err := FlattenPlan(item)
-		// if err != nil {
-		// 	log.Fatalf("Error flattening plan: %v", err)
-		// 	c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error flattening plan: %v", err))
-		// 	return
-		// }
-
-		// // This example will update the item with the new flattened data
-		// for _, jsonBlock := range flatMap {
-		// 	// Convert jsonBlock back to a map for attributevalue.MarshalMap
-		// 	var updateMap map[string]interface{}
-		// 	if err := json.Unmarshal(jsonBlock, &updateMap); err != nil {
-		// 		c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error preparing update data: %v", err))
-		// 		return
-		// 	}
-
-		// 	av, err := attributevalue.MarshalMap(updateMap)
-		// 	if err != nil {
-		// 		c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error marshalling update data: %v", err))
-		// 		return
-		// 	}
-
-		// 	key := map[string]types.AttributeValue{
-		// 		"objectId": &types.AttributeValueMemberS{Value: objectId},
-		// 	}
-
-		// 	updateExpression := "SET"
-		// 	expressionAttributeNames := make(map[string]string) // Correctly initialize the map
-		// 	expressionAttributeValues := map[string]types.AttributeValue{}
-		// 	i := 0
-		// 	for k, v := range av {
-		// 		if k == "objectId" {
-		// 			continue
-		// 		}
-		// 		// Use expression attribute names for reserved keywords
-		// 		expressionAttributeName := fmt.Sprintf("#attr%d", i)
-		// 		expressionAttributeValue := fmt.Sprintf(":val%d", i)
-
-		// 		updateExpression += fmt.Sprintf(" %s = %s,", expressionAttributeName, expressionAttributeValue)
-		// 		expressionAttributeValues[expressionAttributeValue] = v
-		// 		expressionAttributeNames[expressionAttributeName] = k
-		// 		i++
-		// 	}
-		// 	updateExpression = strings.TrimSuffix(updateExpression, ",")
-
-		// 	err = updateItem(svc, db.TableName, key, updateExpression, expressionAttributeValues, expressionAttributeNames)
-		// 	if err != nil {
-		// 		c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error updating item: %v", err))
-		// 		return
-		// 	}
-
-		// }
-
-		updatedItem, _, err := getItem(svc, db.TableName, map[string]types.AttributeValue{
-			"objectId": &types.AttributeValueMemberS{Value: objectId},
-		})
-		if err != nil {
-			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error fetching updated item: %v", err))
-			return
-		}
-
 		// Generate ETag for the updated item
-		updatedItemJSON, err := json.Marshal(updatedItem)
+		updatedItemJSON, err := json.Marshal(currentPlan)
 		if err != nil {
 			c.AbortWithError(http.StatusInternalServerError, fmt.Errorf("error marshalling updated item to JSON: %v", err))
 			return
