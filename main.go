@@ -13,9 +13,12 @@ var googleOauthConfig = &oauth2.Config{
 }
 
 func main() {
-	go queue.ConnectSQS()
+	//create the elastic queue
+	go queue.CreateElasticQueue()
+	//poll the queue
 	go queue.PollMessagesAndInsertToElasticsearch()
-	// go queue.InsertSimpleStringToElasticsearch()
+
+	//start the webapp routees
 	r := router.InitRouter(googleOauthConfig)
 	r.Run(":8081")
 }

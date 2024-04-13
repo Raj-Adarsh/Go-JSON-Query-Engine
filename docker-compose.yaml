@@ -5,14 +5,9 @@ services:
   #   ports:
   #     - "8080:8080"
   #   depends_on:
-  #     - redis
   #     - elasticsearch
-  #     - rabbitmq
-
-  # redis:
-  #   image: "redis:alpine"
-  #   ports:
-  #     - "6379:6379"
+  #   environment:
+  #     - GOOGLE_CLIENT_ID: "510632257466-7ebmto0f084dm9ho9oc3u5ealuprivlb.apps.googleusercontent.com"
 
   elasticsearch:
     container_name: elasticsearch
