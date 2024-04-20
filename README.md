@@ -1,4 +1,4 @@
-A Go web application which stores a complex json document in a key-value store and supports CRUD operations. The web app also supports complex queries and searching capabilities using Elastic Search and Kibana. 
+A Go web application which stores a complex json document in a key-value store and supports CRUD operations. HTTP requests are authenticated using O Auth 2.0. The web app also supports complex queries and searching capabilities using Elastic Search and Kibana. 
 
     The key-value store used is DynamoDB
     The queue used for pub/sub is AWS SQS/ElasticMQ
@@ -6,6 +6,7 @@ A Go web application which stores a complex json document in a key-value store a
     The web application stores a complex json document(nested JSON objects) as individual objects in the kv store to support querying based on types.
     All Services used in the project uses a local copy, for ex - AWS local dynamodb, AWS local SQS - ElasticMQ
     An approach to GraphQL is also visualised.
+    All HTTP requests are authorised by O Auth 2.0 Implicit Grant Flow.
 Sample Commands:
 
 Create Table:
